@@ -33,6 +33,7 @@ async function main() {
           chatName: chat?.meta?.name,
           sender: msg.sender,
           text: msg.text,
+          content: msg.content,
           ts: msg.ts,
         }),
       });

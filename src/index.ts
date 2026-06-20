@@ -1,6 +1,15 @@
 export { EvergramCore } from "./core";
 export type { EvergramCoreOptions, EvergramDevice, EvergramChatMessage } from "./core";
 
+export { parseMessageContent, formatMessagePreview } from "./message-content";
+export type {
+  MessageContent,
+  TextContent,
+  AudioContent,
+  PaymentRequestContent,
+  PaymentReceiptContent,
+} from "./message-content";
+
 export { EvergramBot } from "./bot";
 export type { JoinRequestHandle, EvergramBotOptions } from "./bot";
 

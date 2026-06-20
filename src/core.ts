@@ -22,6 +22,7 @@ import {
   EvergramValidationError,
   errorFromCode,
 } from "./errors";
+import { MessageContent, parseMessageContent } from "./message-content";
 
 export interface EvergramDevice {
   deviceId: string;
@@ -67,6 +68,8 @@ export interface EvergramChatMessage {
   msgId: string;
   ts: number;
   text: string | null;
+  /** Typed view of `text` — switch on `.type` instead of parsing `text` yourself. */
+  content: MessageContent;
 }
 
 // Low-level, faithful mirror of the wire protocol — see webapp/app/lib/evergram-client.ts
@@ -561,6 +564,7 @@ export class EvergramCore extends EventEmitter {
       msgId: env.send!.msgId,
       ts: env.ts,
       text,
+      content: parseMessageContent(text),
     };
 
     this.emit("message", message);

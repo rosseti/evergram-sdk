@@ -14,11 +14,12 @@ async function main() {
   bot.core.on("chatKeyRotated", ({ chatId }) => console.log(`[echo-bot] chat ${chatId} key rotated`));
 
   bot.onMessage(async (msg, chat) => {
-    if (!msg.text) return; // decryption failed or non-text envelope
     if (!chat) return; // chat metadata not synced yet
+    if (msg.content.type !== "text") return; // skip audio/payment envelopes — nothing sensible to echo
+    if (!msg.content.text) return; // decryption failed or empty message
 
-    console.log(`[echo-bot] ${msg.sender} -> ${msg.text}`);
-    await bot.reply(msg, `Echo: ${msg.text}`);
+    console.log(`[echo-bot] ${msg.sender} -> ${msg.content.text}`);
+    await bot.reply(msg, `Echo: ${msg.content.text}`);
   });
 
   await bot.start();
