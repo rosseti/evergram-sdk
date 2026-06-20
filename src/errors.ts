@@ -1,0 +1,87 @@
+// Normalizes the ad hoc string codes scattered across the gateway's
+// handlers (see webapp/app/gateway/handlers/inbound/*.ts and
+// ResponseStatus.code / Error.code on the wire) into a typed hierarchy.
+// Callers do `catch (e) { if (e instanceof EvergramRateLimitError) ... }`
+// instead of comparing magic strings.
+
+export class EvergramError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message?: string) {
+    super(message || code);
+    this.name = this.constructor.name;
+    this.code = code;
+  }
+}
+
+export class EvergramAuthError extends EvergramError {}
+export class EvergramRateLimitError extends EvergramError {}
+export class EvergramAccessDeniedError extends EvergramError {}
+export class EvergramRestrictedError extends EvergramError {}
+export class EvergramNotFoundError extends EvergramError {}
+export class EvergramValidationError extends EvergramError {}
+export class EvergramTimeoutError extends EvergramError {}
+export class EvergramConnectionError extends EvergramError {}
+
+const AUTH_CODES = new Set([
+  "NOT_AUTHENTICATED",
+  "invalid_authorization",
+  "invalid_auth_payload",
+  "invalid_device",
+  "missing_auth",
+  "missing_auth_proof",
+  "invalid_signed_message_proof",
+  "invalid_signed_message_public_key",
+  "invalid_signed_message_address",
+  "invalid_signed_message_signature",
+  "unsupported_chain_family",
+]);
+
+const RATE_LIMIT_CODES = new Set([
+  "RATE_LIMIT",
+  "rate_limited",
+  "RATE_LIMIT_CREATE_CHAT",
+]);
+
+const ACCESS_DENIED_CODES = new Set([
+  "ACCESS_DENIED",
+  "access_denied",
+  "capability_not_allowed",
+]);
+
+const RESTRICTED_CODES = new Set([
+  "ACCOUNT_RESTRICTED",
+  "account_restricted",
+]);
+
+const NOT_FOUND_CODES = new Set([
+  "CHAT_NOT_FOUND",
+  "chat_not_found",
+  "device_not_registered",
+]);
+
+const VALIDATION_CODES = new Set([
+  "INVALID_PARTICIPANTS",
+  "invalid_participants",
+  "invalid_message_size",
+  "INVALID_CHAT_NAME",
+  "invalid_chat_name",
+  "IDENTITY_HAS_NO_DEVICES",
+  "DEVICE_MISSING_PUBKEY",
+  "missing_field",
+  "no_participants",
+]);
+
+// Builds the right EvergramError subclass for a gateway/contract response
+// code. Falls back to the generic EvergramError for anything not in the
+// known tables above rather than guessing — an unrecognized code means the
+// caller still gets a typed error with .code set, just not narrowed further.
+export function errorFromCode(code: string, message?: string): EvergramError {
+  if (AUTH_CODES.has(code)) return new EvergramAuthError(code, message);
+  if (RATE_LIMIT_CODES.has(code)) return new EvergramRateLimitError(code, message);
+  if (ACCESS_DENIED_CODES.has(code)) return new EvergramAccessDeniedError(code, message);
+  if (RESTRICTED_CODES.has(code)) return new EvergramRestrictedError(code, message);
+  if (NOT_FOUND_CODES.has(code)) return new EvergramNotFoundError(code, message);
+  if (VALIDATION_CODES.has(code)) return new EvergramValidationError(code, message);
+  return new EvergramError(code, message);
+}

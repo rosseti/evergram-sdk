@@ -1,0 +1,767 @@
+syntax = "proto3";
+
+package evergram;
+
+enum ChainFamily {
+  CHAIN_FAMILY_UNSPECIFIED = 0;
+  XRPL                     = 1;
+  EVM                      = 2;
+  BTC                      = 3;
+}
+
+message ChainIdentity {
+  ChainFamily     chain_family = 1;
+  string          address      = 2; // rAddress, 0x..., etc
+  optional string network_id   = 3;
+}
+
+// AuthProof is only valid during bootstrap or sensitive operations.
+// It must NOT be persisted or propagated beyond session boundaries.
+message AuthProof {
+  oneof proof {
+    string             jwt            = 1;
+    SignedMessageProof signed_message = 2;
+    bytes              hp_challenge   = 3;
+  }
+}
+
+// Direct wallet-signature proof (e.g. XRPL), used by headless/programmatic
+// clients (bots, SDK) that have no Xaman session to obtain a jwt from.
+// The gateway reconstructs the expected challenge string itself
+// ("evergram-auth:{address}:{deviceId}:{unixMinuteTimestamp}") and verifies
+// signature_hex against public_key_hex, then confirms the derived address
+// matches ChainIdentity.address.
+message SignedMessageProof {
+  string public_key_hex = 1;
+  string signature_hex  = 2;
+}
+
+/* message BootstrapAuthRequest {
+ ChainIdentity identity   = 1;
+ AuthProof     proof      = 2;
+ string        device_id  = 3;
+ bytes         device_pub = 4;
+ } */
+
+message DeviceForceRefresh {
+
+}
+
+message DeviceForceRefreshResponse {
+  ResponseStatus status = 1;
+}
+
+message ClientMessage {
+  oneof payload {
+    Auth                 auth            = 2;
+    CreateChat           create_chat     = 3;
+    RegisterDevice       register_device = 4;
+    GetProfile           get_profile     = 5;
+    QueryChats           query_chats     = 6;
+    Envelope             envelope        = 7; // events: SEND, TYPING, ACK, DELIVERY ...
+    PingPong             ping            = 8;
+    ChangeProfileRequest change_profile  = 9;
+
+    GrantBetaAccess  grant_beta_access = 10;
+    InitiatePurchase initiate_purchase = 11;
+    ClaimPro         claim_pro         = 12;
+    VerifyPurchase   verify_purchase   = 13;
+
+    WatchIdentities   watch_identities   = 14;
+    UnwatchIdentities unwatch_identities = 15;
+
+    Envelope relay_message_envelope = 16;
+
+    RotateChatVersion rotate_chat_version = 17;
+    ClaimBetaAccess   claim_beta_access   = 18;
+
+    LeaveChat  leave_chat  = 19;
+    ReportUser report_user = 20;
+
+    AddParticipantRequest    add_participant    = 21;
+    RemoveParticipantRequest remove_participant = 22;
+    SetChatMode              set_chat_mode      = 23;
+    UpdateChatRoles          update_chat_roles  = 24;
+    DeviceForceRefresh       device_force_refresh = 25;
+    UpgradeContract          upgrade_contract     = 26;
+    GetMetrics               get_metrics          = 27;
+
+    GenerateInviteLink generate_invite_link = 28;
+    RevokeInviteLink   revoke_invite_link   = 29;
+    ResolveInvite      resolve_invite       = 30;
+    RequestJoin        request_join         = 31;
+
+    SetChatDiscoverable set_chat_discoverable = 32;
+    ListPublicChats     list_public_chats     = 33;
+  }
+}
+
+message SetChatMode {
+  string chat_id   = 1;
+  bool   moderated = 2;
+}
+
+message SetChatModeResponse {
+  ResponseStatus status = 1;
+
+  string chat_id      = 2;
+  uint64 chat_version = 3;
+}
+
+message ClaimBetaAccess {
+
+}
+message ClaimBetaAccessResponse {
+  ResponseStatus status = 1;
+  int64          ts     = 2;
+}
+
+message AddParticipantRequest {
+  string                      chat_id           = 1;
+  string                      remote_identity   = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+}
+
+message RemoveParticipantRequest {
+  string                      chat_id           = 1;
+  string                      remote_identity   = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+}
+
+message AddParticipantResponse {
+  ResponseStatus status = 1;
+
+  string chat_id         = 2;
+  string remote_identity = 3;
+
+  uint64 chat_version = 4;
+}
+
+message RemoveParticipantResponse {
+  ResponseStatus status = 1;
+
+  string chat_id         = 2;
+  string remote_identity = 3;
+
+  uint64 chat_version = 4;
+}
+
+message GenerateInviteLink {
+  string         chat_id    = 1;
+  optional int64 expires_at = 2; // unix ms, 0/unset = never expires
+  optional int32 max_uses   = 3; // 0/unset = unlimited
+}
+
+message GenerateInviteLinkResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  string         invite_code  = 3;
+  uint64         chat_version = 4;
+}
+
+message RevokeInviteLink {
+  string chat_id = 1;
+}
+
+message RevokeInviteLinkResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  uint64         chat_version = 3;
+}
+
+message ResolveInvite {
+  string invite_code = 1;
+}
+
+message ResolveInviteResponse {
+  ResponseStatus status            = 1;
+  string         chat_id           = 2;
+  string         name              = 3;
+  int32          member_count      = 4;
+  bool           already_member    = 5;
+  bool           already_requested = 6;
+}
+
+message RequestJoin {
+  string invite_code = 1;
+}
+
+message RequestJoinResponse {
+  ResponseStatus  status            = 1;
+  string          chat_id           = 2;
+  bool            already_member    = 3;
+  bool            already_requested = 4;
+  string          name              = 5;
+  repeated string admins            = 6;
+  repeated string moderators        = 7;
+}
+
+// Server -> client push, sent to a group's admins/moderators when someone
+// requests to join via invite link.
+message JoinRequestedEvent {
+  string chat_id  = 1;
+  string identity = 2;
+  string name     = 3; // group name, for notification copy
+  int64  ts       = 4;
+}
+
+message SetChatDiscoverable {
+  string chat_id      = 1;
+  bool   discoverable = 2;
+  string category     = 3; // required when discoverable=true; ignored otherwise
+}
+
+message SetChatDiscoverableResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  bool           discoverable = 3;
+  string         category     = 4;
+  uint64         chat_version = 5;
+}
+
+message ListPublicChats {
+  string category = 1; // empty = all categories
+}
+
+message PublicChatPreview {
+  string chat_id      = 1;
+  string name         = 2;
+  int32  member_count = 3;
+  string category     = 4;
+  string invite_code  = 5;
+}
+
+message ListPublicChatsResponse {
+  ResponseStatus             status = 1;
+  repeated PublicChatPreview chats  = 2;
+}
+
+message ServerMessage {
+  oneof payload {
+    AuthResponse           auth_response            = 1;
+    RegisterDeviceResponse register_device_response = 2;
+    CreateChatResponse     create_chat_response     = 3;
+    QueryChatsResponse     query_chats_response     = 5;
+    Error                  error                    = 6;
+    Envelope               envelope                 = 7; // events: SEND, TYPING, ACK, DELIVERY ...
+    PingPong               pong                     = 8;
+    ChangeProfileResponse  change_profile_response  = 9;
+    ProfileUpdatedEvent    profile_updated          = 10;
+    GetProfileResponse     get_profile_response     = 11;
+
+    GrantBetaAccessResponse grant_beta_access_response = 12;
+
+    InitiatePurchaseResponse initiate_purchase_response = 13;
+    ClaimProResponse         claim_pro_response         = 14;
+    VerifyPurchaseResponse   verify_purchase_response   = 15;
+
+    AccountPresence      account_presence       = 16;
+    AccountAccessUpdated account_access_updated = 17;
+
+    GetDevicePublicKeysByIdentities get_device_public_keys_by_identities = 18;
+
+    RotateChatVersionResponse rotate_chat_version_response = 19;
+    ClaimBetaAccessResponse   claim_beta_access_response   = 20;
+
+    LeaveChatResponse leave_chat_response = 21;
+
+    ReputationUpdated  reputation_updated   = 22;
+    ReportUserResponse report_user_response = 23;
+
+    AddParticipantResponse    add_participant_response    = 24;
+    RemoveParticipantResponse remove_participant_response = 25;
+    SetChatModeResponse       set_chat_mode_response      = 26;
+
+    UpdateChatRolesResponse update_chat_roles_response = 27;
+
+    DeviceForceRefreshResponse device_force_refresh_response = 28;
+    UpgradeContractResponse    upgrade_contract_response    = 29;
+    MetricsResponse            metrics_response             = 30;
+
+    GenerateInviteLinkResponse generate_invite_link_response = 31;
+    RevokeInviteLinkResponse   revoke_invite_link_response   = 32;
+    ResolveInviteResponse      resolve_invite_response       = 33;
+    RequestJoinResponse        request_join_response         = 34;
+    JoinRequestedEvent         join_requested_event           = 35;
+
+    SetChatDiscoverableResponse set_chat_discoverable_response = 36;
+    ListPublicChatsResponse     list_public_chats_response      = 37;
+  }
+}
+
+message GetDevicePublicKeysByIdentities {
+  repeated string remote_identities = 1;
+}
+
+message GetDevicePublicKeysByIdentitiesResponse {
+
+  message IdentityDevices {
+    repeated Device devices = 1;
+  }
+
+  ResponseStatus status = 1;
+
+  map<string, IdentityDevices> result = 2;
+}
+
+message RotateChatVersion {
+  string                      chat_id           = 1;
+  string                      account           = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+}
+
+message RotateChatVersionResponse {
+  ResponseStatus status = 1;
+  ChatInfo       chat   = 4;
+}
+
+message Envelope {
+  string          type         = 1; // "SEND", "ACK", "TYPING", "DELIVERY"
+  Device          device       = 2;
+  string          chat_id      = 3;
+  string          sender       = 4; // sender identity key
+  repeated string participants = 5;
+  int64           ts           = 6;
+
+  oneof content {
+    SendContent           send     = 7;
+    TypingContent         typing   = 8;
+    AckContent            ack      = 9;
+    DeliveryStatusContent delivery = 10;
+  }
+}
+
+message SendContent {
+  string msg_id     = 1;
+  string ciphertext = 2;
+  string nonce      = 3;
+}
+
+message TypingContent {
+  bool is_typing = 1;
+}
+
+message AckContent {
+  string event_type     = 1; // SEND, TYPING, DELIVERY
+  string related_msg_id = 2;
+}
+
+message DeliveryStatusContent {
+  string         msg_id = 1;
+  ResponseStatus status = 2;
+  int64          ts     = 3;
+}
+
+message Device {
+  string device_id      = 1;
+  string device_pub_hex = 2;
+}
+
+message RegisterDevice {
+  ChainIdentity identity = 1;
+  Device        device   = 2;
+  AuthProof     proof    = 3;
+}
+
+message RegisterDeviceResponse {
+  ResponseStatus    status           = 1;
+  string            account          = 2;
+  string            device_id        = 3;
+  repeated Device   devices          = 4;
+  repeated ChatInfo rotated_sym_keys = 5;
+}
+
+message Auth {
+  ChainIdentity identity = 1;
+  AuthProof     proof    = 2;
+  Device        device   = 3;
+}
+
+message AccessInfo {
+  string          tier         = 1;
+  bool            is_admin     = 2;
+  repeated string capabilities = 3;
+  int64           joined_at    = 4;
+  string          invited_by   = 5;
+
+  repeated Subscription subscriptions = 6;
+  bool                  is_restricted = 7;
+}
+
+message AuthResponse {
+  ChainIdentity  identity       = 1;
+  Device         device         = 2;
+  int64          ts             = 3;
+  ResponseStatus status         = 4;
+  AccessInfo     access         = 5;
+  Profile        profile        = 6;
+  string         profile_status = 7;
+
+  message Pending {
+    bool          beta                    = 1;
+    optional bool device_refresh_required = 2;
+  }
+
+  optional Pending pending = 8;
+}
+
+message CreateChat {
+  string                      type              = 1; // "one-on-one" | "group"
+  repeated string             participants      = 2;
+  Meta                        meta              = 3;
+  Device                      device            = 4;
+  map<string, AccountSymKeys> sym_key_encrypted = 5;
+}
+
+message Meta {
+  message Roles {
+    repeated string admins     = 1;
+    repeated string moderators = 2;
+    repeated string banned     = 3;
+  }
+
+  message Modes {
+    bool   moderated         = 1;
+    bool   invite_enabled    = 2;
+    string invite_code       = 3;
+    int64  invite_expires_at = 4; // 0 = never expires
+    int32  invite_max_uses   = 5; // 0 = unlimited
+    int32  invite_use_count  = 6;
+    bool   discoverable      = 7;
+    string category          = 8; // one of a fixed server-side allowlist; set only when discoverable
+  }
+
+  string name  = 1;
+  Roles  roles = 2;
+  Modes  modes = 3;
+}
+
+message CreateChatResponse {
+  ChatInfo       chat   = 1;
+  ResponseStatus status = 2;
+}
+
+message ChatInfo {
+  string          type         = 1; // "one-on-one" | "group"
+  int64           chat_version = 2;
+  repeated string participants = 3;
+  optional Meta   meta         = 4;
+  string          chat_id      = 5;
+  string          created_by   = 6;
+  int64           created_at   = 7;
+
+  map<string, AccountSymKeys> sym_key_encrypted = 8;
+
+  repeated string pending_join_requests = 9;
+}
+
+message AccountSymKeys {
+  // deviceId -> SymKeyEncrypted
+  map<string, SymKeyEncrypted> devices = 1;
+}
+
+message SymKeyEncrypted {
+  string ephemeral_pubkey = 1;
+  string ciphertext       = 2;
+  string nonce            = 3;
+}
+
+message GetProfile {
+  ChainIdentity remote_identity = 1;
+}
+
+message EncryptedKey {
+  string nonce      = 1;
+  string ciphertext = 2;
+}
+
+message QueryChats {
+  map<string, uint32> known_versions = 2;
+}
+
+message ChatSyncResult {
+  string chat_id = 1;
+
+  enum Status {
+    UP_TO_DATE = 0;
+    OUTDATED   = 1;
+    MISSING    = 2;
+  }
+
+  Status status = 2;
+
+  ChatInfo chat           = 3;
+  uint32   server_version = 4;
+}
+
+message QueryChatsResponse {
+  ResponseStatus          status  = 1;
+  string                  account = 2;
+  repeated ChatSyncResult results = 3;
+}
+
+message ResponseStatus {
+  bool   ok      = 1;
+  string code    = 2;
+  string message = 3;
+}
+
+message Error {
+  string type    = 1;
+  string code    = 2;
+  string message = 3;
+}
+
+message PingPong {
+  string id = 1;
+  int64  ts = 2;
+}
+
+message Profile {
+  ChainIdentity identity   = 1;
+  string        nickname   = 2;
+  string        avatar_url = 3;
+  string        bio        = 4;
+  int64         updated_at = 5;
+  bool          is_admin   = 6;
+}
+
+message ChangeProfileRequest {
+  string nickname   = 1;
+  string avatar_url = 2;
+  string bio        = 3;
+}
+
+message ChangeProfileResponse {
+  ResponseStatus status  = 1;
+  Profile        profile = 2;
+}
+
+message ProfileUpdatedEvent {
+  Profile profile = 1;
+}
+
+message GetProfileResponse {
+  ResponseStatus status  = 1;
+  Profile        profile = 2;
+}
+
+message GrantBetaAccess {
+  ChainIdentity remote_identity = 1;
+}
+
+message GrantBetaAccessResponse {
+  ResponseStatus status          = 1;
+  ChainIdentity  invited_account = 2;
+  ChainIdentity  invited_by      = 3;
+  int64          ts              = 4;
+}
+
+// PRO subscription management
+message InitiatePurchase {
+  string account = 1;
+  string plan    = 2; // "pro"
+
+  optional string pro_observation_jwt = 3;
+}
+
+message PaymentTxn {
+  string TransactionType = 1;
+  string Destination     = 2;
+  string Amount          = 3;
+
+  message HookParameterWrapper {
+    message HookParameterData {
+      string HookParameterName  = 1;
+      string HookParameterValue = 2;
+    }
+    HookParameterData HookParameter = 1;
+  }
+  repeated HookParameterWrapper HookParameters = 4;
+
+  message MemoWrapper {
+    message MemoData {
+      string MemoData   = 1;
+      string MemoType   = 2;
+      string MemoFormat = 3;
+    }
+    MemoData Memo = 1;
+  }
+  repeated MemoWrapper Memos = 5;
+}
+
+message InitiatePurchaseResponse {
+  ResponseStatus status = 1;
+
+  optional string     intent_id = 2;
+  optional PaymentTxn payment   = 3;
+
+  optional Subscription   subscription    = 4;
+  optional ExistingIntent existing_intent = 5;
+
+  optional AlreadySubscribedInfo already_subscribed = 6;
+}
+
+message AlreadySubscribedInfo {
+  int64  expires_at     = 1;
+  int32  days_remaining = 2;
+  string token_id       = 3;
+  int64  issued_at      = 4;
+  string source         = 5; // "manual", "auto_activation", "gift", etc.
+}
+
+message ExistingIntent {
+  string     intent_id  = 1;
+  int64      created_at = 2;
+  int64      expires_at = 3;
+  string     plan       = 4;
+  PaymentTxn payment    = 5;
+}
+
+message ClaimPro {
+  string account = 1;
+}
+
+message ClaimProResponse {
+  ResponseStatus status       = 1;
+  Subscription   subscription = 2;
+}
+
+message VerifyPurchase {
+  string          intent_id           = 1;
+  optional string tx_hash             = 2;
+  optional string pro_observation_jwt = 3;
+}
+
+message VerifyPurchaseResponse {
+  ResponseStatus status       = 1;
+  Subscription   subscription = 2;
+}
+
+message Subscription {
+  string type           = 1; // "pro"
+  int64  issued_at      = 2;
+  int64  expires_at     = 3;
+  int32  days_remaining = 4;
+  string token_id       = 5;
+}
+
+message WatchIdentities {
+  repeated string identities = 1;
+}
+
+message UnwatchIdentities {
+  repeated string identities = 1;
+}
+
+message AccountPresence {
+  string identity_key = 1;
+
+  enum Status {
+    OFFLINE = 0;
+    ONLINE  = 1;
+  }
+
+  Status status = 2;
+  uint64 ts     = 3;
+}
+
+message AccountAccessUpdated {
+  string                identity_key  = 1;
+  repeated Subscription subscriptions = 2;
+}
+
+message IgnoredChat {
+  string chat_id = 1;
+  string reason  = 2;
+}
+
+message LeaveChat {
+  string chat_id = 1;
+}
+
+message LeaveChatResponse {
+  ResponseStatus status  = 1;
+  string         chat_id = 2;
+}
+
+message ReportUser {
+  string target_identity = 1;
+  string reason          = 2;
+}
+
+message ReportUserResponse {
+  ResponseStatus status    = 1;
+  int32          new_score = 2;
+}
+
+message ReputationUpdated {
+  string                identity      = 1;
+  bool                  is_restricted = 2;
+  int32                 score         = 3;
+  string                reason        = 4;
+  repeated Subscription subscriptions = 5;
+}
+
+message UpdateChatRoles {
+  string          chat_id    = 1;
+  repeated string admins     = 2;
+  repeated string moderators = 3;
+}
+
+message UpdateChatRolesResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  uint64         chat_version = 3;
+}
+
+message UpgradeContract {
+  string bundle = 1;
+}
+
+message UpgradeContractResponse {
+  string status = 1;
+  string error  = 2;
+}
+
+message GetMetrics {
+}
+
+message MetricsWallets {
+  int32 total = 1;
+}
+
+message MetricsDevices {
+  int32  total          = 1;
+  double avg_per_wallet = 2;
+}
+
+message MetricsChats {
+  int32             total   = 1;
+  map<string, int32> by_type = 2;
+}
+
+message MetricsAccess {
+  map<string, int32> by_tier         = 1;
+  int32              pro_subscribers = 2;
+  int32              restricted      = 3;
+}
+
+message MetricsInvites {
+  int32 total    = 1;
+  int32 consumed = 2;
+  int32 pending  = 3;
+}
+
+message MetricsData {
+  MetricsWallets wallets = 1;
+  MetricsDevices devices = 2;
+  MetricsChats   chats   = 3;
+  MetricsAccess  access  = 4;
+  MetricsInvites invites = 5;
+}
+
+message MetricsResponse {
+  ResponseStatus status  = 1;
+  MetricsData    metrics = 2;
+}

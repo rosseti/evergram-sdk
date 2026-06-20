@@ -1,0 +1,31 @@
+{
+  "name": "@evergram/sdk",
+  "version": "0.1.0",
+  "description": "Headless SDK for building bots and programmatic integrations on the Evergram protocol (XRPL wallet-signature auth, E2EE messaging).",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "protoc": "protoc --plugin=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=. ./src/proto/evergram.proto --ts_proto_opt=esModuleInterop=true",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "example:echo-bot": "tsx examples/echo-bot/index.ts",
+    "example:moderation-bot": "tsx examples/moderation-bot/index.ts",
+    "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.10.1",
+    "ripple-keypairs": "^2.0.0",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.3",
+    "xrpl": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/ws": "^8.18.1",
+    "ts-proto": "^2.8.3",
+    "tsx": "^4.20.6",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,31 @@
+import { join } from "node:path";
+import { EvergramBot } from "../../src";
+import { loadOrCreateIdentity } from "../_shared/load-identity";
+
+const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
+
+async function main() {
+  const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
+
+  const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "EchoBot" });
+
+  bot.core.on("error", (err) => console.error("[echo-bot] error:", err));
+  bot.core.on("restricted", (event) => console.warn("[echo-bot] account restricted:", event.reason));
+  bot.core.on("chatKeyRotated", ({ chatId }) => console.log(`[echo-bot] chat ${chatId} key rotated`));
+
+  bot.onMessage(async (msg, chat) => {
+    if (!msg.text) return; // decryption failed or non-text envelope
+    if (!chat) return; // chat metadata not synced yet
+
+    console.log(`[echo-bot] ${msg.sender} -> ${msg.text}`);
+    await bot.reply(msg, `Echo: ${msg.text}`);
+  });
+
+  await bot.start();
+  console.log(`[echo-bot] online as ${wallet.address}`);
+}
+
+main().catch((err) => {
+  console.error("[echo-bot] fatal:", err);
+  process.exit(1);
+});
