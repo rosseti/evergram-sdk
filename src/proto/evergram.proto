@@ -103,6 +103,15 @@ message ClientMessage {
 
     SetChatDiscoverable set_chat_discoverable = 32;
     ListPublicChats     list_public_chats     = 33;
+
+    UpdatePrivacySettings update_privacy_settings = 34;
+    AcceptChatRequest     accept_chat_request     = 35;
+    BlockIdentity         block_identity          = 36;
+    UnblockIdentity       unblock_identity        = 37;
+    CheckBlocked          check_blocked           = 38;
+
+    AcceptGroupInvite  accept_group_invite  = 39;
+    DeclineGroupInvite decline_group_invite = 40;
   }
 }
 
@@ -298,6 +307,17 @@ message ServerMessage {
     ListPublicChatsResponse     list_public_chats_response      = 37;
 
     AuthChallenge auth_challenge = 38;
+
+    UpdatePrivacySettingsResponse update_privacy_settings_response = 39;
+    AcceptChatRequestResponse     accept_chat_request_response     = 40;
+    BlockIdentityResponse         block_identity_response          = 41;
+    UnblockIdentityResponse       unblock_identity_response        = 42;
+    ChatRequestReceivedEvent      chat_request_received            = 43;
+    CheckBlockedResponse          check_blocked_response           = 44;
+
+    AcceptGroupInviteResponse  accept_group_invite_response  = 45;
+    DeclineGroupInviteResponse decline_group_invite_response = 46;
+    GroupInviteReceivedEvent   group_invite_received         = 47;
   }
 }
 
@@ -415,6 +435,8 @@ message AuthResponse {
   }
 
   optional Pending pending = 8;
+
+  PrivacySettings settings = 9;
 }
 
 message CreateChat {
@@ -451,6 +473,11 @@ message Meta {
 message CreateChatResponse {
   ChatInfo       chat   = 1;
   ResponseStatus status = 2;
+
+  // Group creation only: invitees skipped because they require chat
+  // approval — a PendingGroupInvite was queued for each instead of adding
+  // them to chat.participants immediately.
+  repeated string pending_invitees = 3;
 }
 
 message ChatInfo {
@@ -470,6 +497,32 @@ message ChatInfo {
 message AccountSymKeys {
   // deviceId -> SymKeyEncrypted
   map<string, SymKeyEncrypted> devices = 1;
+}
+
+// Sent by the recipient of a pending chat request to accept it and
+// materialize the one-on-one chat. Mirrors CreateChat's key-exchange shape.
+message AcceptChatRequest {
+  string                      from_identity     = 1;
+  Meta                        meta              = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+}
+
+message AcceptChatRequestResponse {
+  ResponseStatus status = 1;
+  ChatInfo       chat   = 2;
+}
+
+message PendingChatRequest {
+  string from_identity = 1;
+  Meta   meta          = 2;
+  int64  requested_at  = 3;
+}
+
+// Server -> client push when a CreateChat from another identity is queued
+// for approval instead of materializing immediately (see ResponseStatus.code
+// "pending_approval" on CreateChatResponse).
+message ChatRequestReceivedEvent {
+  PendingChatRequest request = 1;
 }
 
 message SymKeyEncrypted {
@@ -507,9 +560,11 @@ message ChatSyncResult {
 }
 
 message QueryChatsResponse {
-  ResponseStatus          status  = 1;
-  string                  account = 2;
-  repeated ChatSyncResult results = 3;
+  ResponseStatus              status                = 1;
+  string                      account               = 2;
+  repeated ChatSyncResult     results               = 3;
+  repeated PendingChatRequest pending_chat_requests = 4;
+  repeated PendingGroupInvite pending_group_invites = 5;
 }
 
 message ResponseStatus {
@@ -551,6 +606,97 @@ message ChangeProfileResponse {
 
 message ProfileUpdatedEvent {
   Profile profile = 1;
+}
+
+// Opt-in gate requiring explicit approval before a 1:1 chat materializes.
+message UpdatePrivacySettings {
+  optional bool require_chat_approval = 1;
+}
+
+message PrivacySettings {
+  bool  require_chat_approval = 1;
+  int64 updated_at            = 2;
+}
+
+message UpdatePrivacySettingsResponse {
+  ResponseStatus  status   = 1;
+  PrivacySettings settings = 2;
+}
+
+// Blocks/unblocks an identity from initiating or continuing a 1:1
+// conversation. Identity-indexed (not chat-indexed): also used to reject a
+// pending chat request, and enforced by the gateway on message delivery for
+// chats that were already accepted.
+message BlockIdentity {
+  string target_identity = 1;
+}
+
+message BlockIdentityResponse {
+  ResponseStatus status          = 1;
+  string         target_identity = 2;
+}
+
+message UnblockIdentity {
+  string target_identity = 1;
+}
+
+message UnblockIdentityResponse {
+  ResponseStatus status          = 1;
+  string         target_identity = 2;
+}
+
+// Gateway-only query used to enforce blocking on message delivery for chats
+// that were already accepted (the contract never routes messages through
+// consensus, so this check happens out-of-band, not on the send path
+// itself). The caller must be either owner_identity or sender_identity —
+// nobody else may probe a block relationship they aren't a party to.
+message CheckBlocked {
+  string owner_identity  = 1; // whose rejectedSenders list to check
+  string sender_identity = 2; // the identity being checked against it
+}
+
+// Group equivalent of AcceptChatRequest/BlockIdentity: when requireChatApproval
+// is set, AddParticipantResponse.status.code "pending_approval" means the
+// contract queued a PendingGroupInvite (users/{invitee}/pendingGroupInvites/{chatId})
+// instead of adding the participant immediately. Keyed by chatId, not by
+// inviter, since the same admin can invite the same person to several
+// groups at once — unlike a 1:1 chat request, which is unique per sender.
+message AcceptGroupInvite {
+  string                      chat_id           = 1;
+  map<string, AccountSymKeys> sym_key_encrypted = 2;
+}
+
+message AcceptGroupInviteResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  uint64         chat_version = 3;
+}
+
+// Declines this one invite only — does not block the inviter (use
+// BlockIdentity separately for that).
+message DeclineGroupInvite {
+  string chat_id = 1;
+}
+
+message DeclineGroupInviteResponse {
+  ResponseStatus status  = 1;
+  string         chat_id = 2;
+}
+
+message PendingGroupInvite {
+  string chat_id    = 1;
+  string invited_by = 2;
+  Meta   meta       = 3;
+  int64  invited_at = 4;
+}
+
+message GroupInviteReceivedEvent {
+  PendingGroupInvite invite = 1;
+}
+
+message CheckBlockedResponse {
+  ResponseStatus status  = 1;
+  bool           blocked = 2;
 }
 
 message GetProfileResponse {

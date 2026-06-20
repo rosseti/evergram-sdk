@@ -1,5 +1,5 @@
 import { EvergramChatMessage, EvergramCore, EvergramCoreOptions } from "./core";
-import { ChatInfo, JoinRequestedEvent } from "./proto/evergram";
+import { ChatInfo, JoinRequestedEvent, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
 import { EvergramError } from "./errors";
 
 export interface JoinRequestHandle extends JoinRequestedEvent {
@@ -15,8 +15,24 @@ export interface JoinRequestHandle extends JoinRequestedEvent {
   deny(): never;
 }
 
+export interface ChatRequestHandle extends PendingChatRequest {
+  /** Accepts the request and materializes the 1:1 chat (acceptChatRequest). */
+  approve(): Promise<unknown>;
+  /** Rejects the request — clears it without ever creating a chat (blockIdentity). */
+  deny(): Promise<unknown>;
+}
+
+export interface GroupInviteHandle extends PendingGroupInvite {
+  /** Accepts the invite and joins the group (acceptGroupInvite). */
+  approve(): Promise<unknown>;
+  /** Declines this one invite only — does not block the inviter (declineGroupInvite). */
+  deny(): Promise<unknown>;
+}
+
 type MessageHandler = (msg: EvergramChatMessage, chat: ChatInfo | undefined) => void | Promise<void>;
 type JoinRequestHandler = (req: JoinRequestHandle) => void | Promise<void>;
+type ChatRequestHandler = (req: ChatRequestHandle) => void | Promise<void>;
+type GroupInviteHandler = (req: GroupInviteHandle) => void | Promise<void>;
 
 export interface EvergramBotOptions extends EvergramCoreOptions {
   /**
@@ -83,6 +99,53 @@ export class EvergramBot {
 
     this.core.on("joinRequested", wrapped);
     return () => this.core.off("joinRequested", wrapped);
+  }
+
+  // Fires when another identity tries to start a 1:1 chat with this bot
+  // while requireChatApproval is enabled (see core.updatePrivacySettings).
+  // Also covers requests already pending at connect time, replayed from
+  // queryChatsResponse — handlers registered before start() see those too.
+  onChatRequest(handler: ChatRequestHandler): () => void {
+    const wrapped = (event: PendingChatRequest) => {
+      const req: ChatRequestHandle = {
+        ...event,
+        approve: () => this.core.acceptChatRequest(event.fromIdentity),
+        deny: () => this.core.blockIdentity(event.fromIdentity),
+      };
+
+      Promise.resolve(handler(req)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("chatRequestReceived", wrapped);
+
+    for (const req of this.core.getPendingChatRequests()) {
+      wrapped(req);
+    }
+
+    return () => this.core.off("chatRequestReceived", wrapped);
+  }
+
+  // Fires when an admin tries to add this bot to a group while
+  // requireChatApproval is enabled. Also covers invites already pending at
+  // connect time, replayed from queryChatsResponse.
+  onGroupInvite(handler: GroupInviteHandler): () => void {
+    const wrapped = (event: PendingGroupInvite) => {
+      const req: GroupInviteHandle = {
+        ...event,
+        approve: () => this.core.acceptGroupInvite(event.chatId),
+        deny: () => this.core.declineGroupInvite(event.chatId),
+      };
+
+      Promise.resolve(handler(req)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("groupInviteReceived", wrapped);
+
+    for (const req of this.core.getPendingGroupInvites()) {
+      wrapped(req);
+    }
+
+    return () => this.core.off("groupInviteReceived", wrapped);
   }
 
   reply(msg: EvergramChatMessage, text: string) {

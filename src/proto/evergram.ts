@@ -139,6 +139,13 @@ export interface ClientMessage {
   requestJoin?: RequestJoin | undefined;
   setChatDiscoverable?: SetChatDiscoverable | undefined;
   listPublicChats?: ListPublicChats | undefined;
+  updatePrivacySettings?: UpdatePrivacySettings | undefined;
+  acceptChatRequest?: AcceptChatRequest | undefined;
+  blockIdentity?: BlockIdentity | undefined;
+  unblockIdentity?: UnblockIdentity | undefined;
+  checkBlocked?: CheckBlocked | undefined;
+  acceptGroupInvite?: AcceptGroupInvite | undefined;
+  declineGroupInvite?: DeclineGroupInvite | undefined;
 }
 
 export interface SetChatMode {
@@ -336,6 +343,15 @@ export interface ServerMessage {
   setChatDiscoverableResponse?: SetChatDiscoverableResponse | undefined;
   listPublicChatsResponse?: ListPublicChatsResponse | undefined;
   authChallenge?: AuthChallenge | undefined;
+  updatePrivacySettingsResponse?: UpdatePrivacySettingsResponse | undefined;
+  acceptChatRequestResponse?: AcceptChatRequestResponse | undefined;
+  blockIdentityResponse?: BlockIdentityResponse | undefined;
+  unblockIdentityResponse?: UnblockIdentityResponse | undefined;
+  chatRequestReceived?: ChatRequestReceivedEvent | undefined;
+  checkBlockedResponse?: CheckBlockedResponse | undefined;
+  acceptGroupInviteResponse?: AcceptGroupInviteResponse | undefined;
+  declineGroupInviteResponse?: DeclineGroupInviteResponse | undefined;
+  groupInviteReceived?: GroupInviteReceivedEvent | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -453,6 +469,7 @@ export interface AuthResponse {
   profile: Profile | undefined;
   profileStatus: string;
   pending?: AuthResponse_Pending | undefined;
+  settings: PrivacySettings | undefined;
 }
 
 export interface AuthResponse_Pending {
@@ -502,7 +519,15 @@ export interface Meta_Modes {
 
 export interface CreateChatResponse {
   chat: ChatInfo | undefined;
-  status: ResponseStatus | undefined;
+  status:
+    | ResponseStatus
+    | undefined;
+  /**
+   * Group creation only: invitees skipped because they require chat
+   * approval — a PendingGroupInvite was queued for each instead of adding
+   * them to chat.participants immediately.
+   */
+  pendingInvitees: string[];
 }
 
 export interface ChatInfo {
@@ -531,6 +556,41 @@ export interface AccountSymKeys {
 export interface AccountSymKeys_DevicesEntry {
   key: string;
   value: SymKeyEncrypted | undefined;
+}
+
+/**
+ * Sent by the recipient of a pending chat request to accept it and
+ * materialize the one-on-one chat. Mirrors CreateChat's key-exchange shape.
+ */
+export interface AcceptChatRequest {
+  fromIdentity: string;
+  meta: Meta | undefined;
+  symKeyEncrypted: { [key: string]: AccountSymKeys };
+}
+
+export interface AcceptChatRequest_SymKeyEncryptedEntry {
+  key: string;
+  value: AccountSymKeys | undefined;
+}
+
+export interface AcceptChatRequestResponse {
+  status: ResponseStatus | undefined;
+  chat: ChatInfo | undefined;
+}
+
+export interface PendingChatRequest {
+  fromIdentity: string;
+  meta: Meta | undefined;
+  requestedAt: number;
+}
+
+/**
+ * Server -> client push when a CreateChat from another identity is queued
+ * for approval instead of materializing immediately (see ResponseStatus.code
+ * "pending_approval" on CreateChatResponse).
+ */
+export interface ChatRequestReceivedEvent {
+  request: PendingChatRequest | undefined;
 }
 
 export interface SymKeyEncrypted {
@@ -607,6 +667,8 @@ export interface QueryChatsResponse {
   status: ResponseStatus | undefined;
   account: string;
   results: ChatSyncResult[];
+  pendingChatRequests: PendingChatRequest[];
+  pendingGroupInvites: PendingGroupInvite[];
 }
 
 export interface ResponseStatus {
@@ -648,6 +710,112 @@ export interface ChangeProfileResponse {
 
 export interface ProfileUpdatedEvent {
   profile: Profile | undefined;
+}
+
+/** Opt-in gate requiring explicit approval before a 1:1 chat materializes. */
+export interface UpdatePrivacySettings {
+  requireChatApproval?: boolean | undefined;
+}
+
+export interface PrivacySettings {
+  requireChatApproval: boolean;
+  updatedAt: number;
+}
+
+export interface UpdatePrivacySettingsResponse {
+  status: ResponseStatus | undefined;
+  settings: PrivacySettings | undefined;
+}
+
+/**
+ * Blocks/unblocks an identity from initiating or continuing a 1:1
+ * conversation. Identity-indexed (not chat-indexed): also used to reject a
+ * pending chat request, and enforced by the gateway on message delivery for
+ * chats that were already accepted.
+ */
+export interface BlockIdentity {
+  targetIdentity: string;
+}
+
+export interface BlockIdentityResponse {
+  status: ResponseStatus | undefined;
+  targetIdentity: string;
+}
+
+export interface UnblockIdentity {
+  targetIdentity: string;
+}
+
+export interface UnblockIdentityResponse {
+  status: ResponseStatus | undefined;
+  targetIdentity: string;
+}
+
+/**
+ * Gateway-only query used to enforce blocking on message delivery for chats
+ * that were already accepted (the contract never routes messages through
+ * consensus, so this check happens out-of-band, not on the send path
+ * itself). The caller must be either owner_identity or sender_identity —
+ * nobody else may probe a block relationship they aren't a party to.
+ */
+export interface CheckBlocked {
+  /** whose rejectedSenders list to check */
+  ownerIdentity: string;
+  /** the identity being checked against it */
+  senderIdentity: string;
+}
+
+/**
+ * Group equivalent of AcceptChatRequest/BlockIdentity: when requireChatApproval
+ * is set, AddParticipantResponse.status.code "pending_approval" means the
+ * contract queued a PendingGroupInvite (users/{invitee}/pendingGroupInvites/{chatId})
+ * instead of adding the participant immediately. Keyed by chatId, not by
+ * inviter, since the same admin can invite the same person to several
+ * groups at once — unlike a 1:1 chat request, which is unique per sender.
+ */
+export interface AcceptGroupInvite {
+  chatId: string;
+  symKeyEncrypted: { [key: string]: AccountSymKeys };
+}
+
+export interface AcceptGroupInvite_SymKeyEncryptedEntry {
+  key: string;
+  value: AccountSymKeys | undefined;
+}
+
+export interface AcceptGroupInviteResponse {
+  status: ResponseStatus | undefined;
+  chatId: string;
+  chatVersion: number;
+}
+
+/**
+ * Declines this one invite only — does not block the inviter (use
+ * BlockIdentity separately for that).
+ */
+export interface DeclineGroupInvite {
+  chatId: string;
+}
+
+export interface DeclineGroupInviteResponse {
+  status: ResponseStatus | undefined;
+  chatId: string;
+}
+
+export interface PendingGroupInvite {
+  chatId: string;
+  invitedBy: string;
+  meta: Meta | undefined;
+  invitedAt: number;
+}
+
+export interface GroupInviteReceivedEvent {
+  invite: PendingGroupInvite | undefined;
+}
+
+export interface CheckBlockedResponse {
+  status: ResponseStatus | undefined;
+  blocked: boolean;
 }
 
 export interface GetProfileResponse {
@@ -1394,6 +1562,13 @@ function createBaseClientMessage(): ClientMessage {
     requestJoin: undefined,
     setChatDiscoverable: undefined,
     listPublicChats: undefined,
+    updatePrivacySettings: undefined,
+    acceptChatRequest: undefined,
+    blockIdentity: undefined,
+    unblockIdentity: undefined,
+    checkBlocked: undefined,
+    acceptGroupInvite: undefined,
+    declineGroupInvite: undefined,
   };
 }
 
@@ -1494,6 +1669,27 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.listPublicChats !== undefined) {
       ListPublicChats.encode(message.listPublicChats, writer.uint32(266).fork()).join();
+    }
+    if (message.updatePrivacySettings !== undefined) {
+      UpdatePrivacySettings.encode(message.updatePrivacySettings, writer.uint32(274).fork()).join();
+    }
+    if (message.acceptChatRequest !== undefined) {
+      AcceptChatRequest.encode(message.acceptChatRequest, writer.uint32(282).fork()).join();
+    }
+    if (message.blockIdentity !== undefined) {
+      BlockIdentity.encode(message.blockIdentity, writer.uint32(290).fork()).join();
+    }
+    if (message.unblockIdentity !== undefined) {
+      UnblockIdentity.encode(message.unblockIdentity, writer.uint32(298).fork()).join();
+    }
+    if (message.checkBlocked !== undefined) {
+      CheckBlocked.encode(message.checkBlocked, writer.uint32(306).fork()).join();
+    }
+    if (message.acceptGroupInvite !== undefined) {
+      AcceptGroupInvite.encode(message.acceptGroupInvite, writer.uint32(314).fork()).join();
+    }
+    if (message.declineGroupInvite !== undefined) {
+      DeclineGroupInvite.encode(message.declineGroupInvite, writer.uint32(322).fork()).join();
     }
     return writer;
   },
@@ -1761,6 +1957,62 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.listPublicChats = ListPublicChats.decode(reader, reader.uint32());
           continue;
         }
+        case 34: {
+          if (tag !== 274) {
+            break;
+          }
+
+          message.updatePrivacySettings = UpdatePrivacySettings.decode(reader, reader.uint32());
+          continue;
+        }
+        case 35: {
+          if (tag !== 282) {
+            break;
+          }
+
+          message.acceptChatRequest = AcceptChatRequest.decode(reader, reader.uint32());
+          continue;
+        }
+        case 36: {
+          if (tag !== 290) {
+            break;
+          }
+
+          message.blockIdentity = BlockIdentity.decode(reader, reader.uint32());
+          continue;
+        }
+        case 37: {
+          if (tag !== 298) {
+            break;
+          }
+
+          message.unblockIdentity = UnblockIdentity.decode(reader, reader.uint32());
+          continue;
+        }
+        case 38: {
+          if (tag !== 306) {
+            break;
+          }
+
+          message.checkBlocked = CheckBlocked.decode(reader, reader.uint32());
+          continue;
+        }
+        case 39: {
+          if (tag !== 314) {
+            break;
+          }
+
+          message.acceptGroupInvite = AcceptGroupInvite.decode(reader, reader.uint32());
+          continue;
+        }
+        case 40: {
+          if (tag !== 322) {
+            break;
+          }
+
+          message.declineGroupInvite = DeclineGroupInvite.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -1920,6 +2172,41 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.list_public_chats)
         ? ListPublicChats.fromJSON(object.list_public_chats)
         : undefined,
+      updatePrivacySettings: isSet(object.updatePrivacySettings)
+        ? UpdatePrivacySettings.fromJSON(object.updatePrivacySettings)
+        : isSet(object.update_privacy_settings)
+        ? UpdatePrivacySettings.fromJSON(object.update_privacy_settings)
+        : undefined,
+      acceptChatRequest: isSet(object.acceptChatRequest)
+        ? AcceptChatRequest.fromJSON(object.acceptChatRequest)
+        : isSet(object.accept_chat_request)
+        ? AcceptChatRequest.fromJSON(object.accept_chat_request)
+        : undefined,
+      blockIdentity: isSet(object.blockIdentity)
+        ? BlockIdentity.fromJSON(object.blockIdentity)
+        : isSet(object.block_identity)
+        ? BlockIdentity.fromJSON(object.block_identity)
+        : undefined,
+      unblockIdentity: isSet(object.unblockIdentity)
+        ? UnblockIdentity.fromJSON(object.unblockIdentity)
+        : isSet(object.unblock_identity)
+        ? UnblockIdentity.fromJSON(object.unblock_identity)
+        : undefined,
+      checkBlocked: isSet(object.checkBlocked)
+        ? CheckBlocked.fromJSON(object.checkBlocked)
+        : isSet(object.check_blocked)
+        ? CheckBlocked.fromJSON(object.check_blocked)
+        : undefined,
+      acceptGroupInvite: isSet(object.acceptGroupInvite)
+        ? AcceptGroupInvite.fromJSON(object.acceptGroupInvite)
+        : isSet(object.accept_group_invite)
+        ? AcceptGroupInvite.fromJSON(object.accept_group_invite)
+        : undefined,
+      declineGroupInvite: isSet(object.declineGroupInvite)
+        ? DeclineGroupInvite.fromJSON(object.declineGroupInvite)
+        : isSet(object.decline_group_invite)
+        ? DeclineGroupInvite.fromJSON(object.decline_group_invite)
+        : undefined,
     };
   },
 
@@ -2021,6 +2308,27 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     if (message.listPublicChats !== undefined) {
       obj.listPublicChats = ListPublicChats.toJSON(message.listPublicChats);
     }
+    if (message.updatePrivacySettings !== undefined) {
+      obj.updatePrivacySettings = UpdatePrivacySettings.toJSON(message.updatePrivacySettings);
+    }
+    if (message.acceptChatRequest !== undefined) {
+      obj.acceptChatRequest = AcceptChatRequest.toJSON(message.acceptChatRequest);
+    }
+    if (message.blockIdentity !== undefined) {
+      obj.blockIdentity = BlockIdentity.toJSON(message.blockIdentity);
+    }
+    if (message.unblockIdentity !== undefined) {
+      obj.unblockIdentity = UnblockIdentity.toJSON(message.unblockIdentity);
+    }
+    if (message.checkBlocked !== undefined) {
+      obj.checkBlocked = CheckBlocked.toJSON(message.checkBlocked);
+    }
+    if (message.acceptGroupInvite !== undefined) {
+      obj.acceptGroupInvite = AcceptGroupInvite.toJSON(message.acceptGroupInvite);
+    }
+    if (message.declineGroupInvite !== undefined) {
+      obj.declineGroupInvite = DeclineGroupInvite.toJSON(message.declineGroupInvite);
+    }
     return obj;
   },
 
@@ -2120,6 +2428,28 @@ export const ClientMessage: MessageFns<ClientMessage> = {
       : undefined;
     message.listPublicChats = (object.listPublicChats !== undefined && object.listPublicChats !== null)
       ? ListPublicChats.fromPartial(object.listPublicChats)
+      : undefined;
+    message.updatePrivacySettings =
+      (object.updatePrivacySettings !== undefined && object.updatePrivacySettings !== null)
+        ? UpdatePrivacySettings.fromPartial(object.updatePrivacySettings)
+        : undefined;
+    message.acceptChatRequest = (object.acceptChatRequest !== undefined && object.acceptChatRequest !== null)
+      ? AcceptChatRequest.fromPartial(object.acceptChatRequest)
+      : undefined;
+    message.blockIdentity = (object.blockIdentity !== undefined && object.blockIdentity !== null)
+      ? BlockIdentity.fromPartial(object.blockIdentity)
+      : undefined;
+    message.unblockIdentity = (object.unblockIdentity !== undefined && object.unblockIdentity !== null)
+      ? UnblockIdentity.fromPartial(object.unblockIdentity)
+      : undefined;
+    message.checkBlocked = (object.checkBlocked !== undefined && object.checkBlocked !== null)
+      ? CheckBlocked.fromPartial(object.checkBlocked)
+      : undefined;
+    message.acceptGroupInvite = (object.acceptGroupInvite !== undefined && object.acceptGroupInvite !== null)
+      ? AcceptGroupInvite.fromPartial(object.acceptGroupInvite)
+      : undefined;
+    message.declineGroupInvite = (object.declineGroupInvite !== undefined && object.declineGroupInvite !== null)
+      ? DeclineGroupInvite.fromPartial(object.declineGroupInvite)
       : undefined;
     return message;
   },
@@ -4613,6 +4943,15 @@ function createBaseServerMessage(): ServerMessage {
     setChatDiscoverableResponse: undefined,
     listPublicChatsResponse: undefined,
     authChallenge: undefined,
+    updatePrivacySettingsResponse: undefined,
+    acceptChatRequestResponse: undefined,
+    blockIdentityResponse: undefined,
+    unblockIdentityResponse: undefined,
+    chatRequestReceived: undefined,
+    checkBlockedResponse: undefined,
+    acceptGroupInviteResponse: undefined,
+    declineGroupInviteResponse: undefined,
+    groupInviteReceived: undefined,
   };
 }
 
@@ -4728,6 +5067,33 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.authChallenge !== undefined) {
       AuthChallenge.encode(message.authChallenge, writer.uint32(306).fork()).join();
+    }
+    if (message.updatePrivacySettingsResponse !== undefined) {
+      UpdatePrivacySettingsResponse.encode(message.updatePrivacySettingsResponse, writer.uint32(314).fork()).join();
+    }
+    if (message.acceptChatRequestResponse !== undefined) {
+      AcceptChatRequestResponse.encode(message.acceptChatRequestResponse, writer.uint32(322).fork()).join();
+    }
+    if (message.blockIdentityResponse !== undefined) {
+      BlockIdentityResponse.encode(message.blockIdentityResponse, writer.uint32(330).fork()).join();
+    }
+    if (message.unblockIdentityResponse !== undefined) {
+      UnblockIdentityResponse.encode(message.unblockIdentityResponse, writer.uint32(338).fork()).join();
+    }
+    if (message.chatRequestReceived !== undefined) {
+      ChatRequestReceivedEvent.encode(message.chatRequestReceived, writer.uint32(346).fork()).join();
+    }
+    if (message.checkBlockedResponse !== undefined) {
+      CheckBlockedResponse.encode(message.checkBlockedResponse, writer.uint32(354).fork()).join();
+    }
+    if (message.acceptGroupInviteResponse !== undefined) {
+      AcceptGroupInviteResponse.encode(message.acceptGroupInviteResponse, writer.uint32(362).fork()).join();
+    }
+    if (message.declineGroupInviteResponse !== undefined) {
+      DeclineGroupInviteResponse.encode(message.declineGroupInviteResponse, writer.uint32(370).fork()).join();
+    }
+    if (message.groupInviteReceived !== undefined) {
+      GroupInviteReceivedEvent.encode(message.groupInviteReceived, writer.uint32(378).fork()).join();
     }
     return writer;
   },
@@ -5035,6 +5401,78 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.authChallenge = AuthChallenge.decode(reader, reader.uint32());
           continue;
         }
+        case 39: {
+          if (tag !== 314) {
+            break;
+          }
+
+          message.updatePrivacySettingsResponse = UpdatePrivacySettingsResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 40: {
+          if (tag !== 322) {
+            break;
+          }
+
+          message.acceptChatRequestResponse = AcceptChatRequestResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 41: {
+          if (tag !== 330) {
+            break;
+          }
+
+          message.blockIdentityResponse = BlockIdentityResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 42: {
+          if (tag !== 338) {
+            break;
+          }
+
+          message.unblockIdentityResponse = UnblockIdentityResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 43: {
+          if (tag !== 346) {
+            break;
+          }
+
+          message.chatRequestReceived = ChatRequestReceivedEvent.decode(reader, reader.uint32());
+          continue;
+        }
+        case 44: {
+          if (tag !== 354) {
+            break;
+          }
+
+          message.checkBlockedResponse = CheckBlockedResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 45: {
+          if (tag !== 362) {
+            break;
+          }
+
+          message.acceptGroupInviteResponse = AcceptGroupInviteResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 46: {
+          if (tag !== 370) {
+            break;
+          }
+
+          message.declineGroupInviteResponse = DeclineGroupInviteResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 47: {
+          if (tag !== 378) {
+            break;
+          }
+
+          message.groupInviteReceived = GroupInviteReceivedEvent.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -5219,6 +5657,51 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.auth_challenge)
         ? AuthChallenge.fromJSON(object.auth_challenge)
         : undefined,
+      updatePrivacySettingsResponse: isSet(object.updatePrivacySettingsResponse)
+        ? UpdatePrivacySettingsResponse.fromJSON(object.updatePrivacySettingsResponse)
+        : isSet(object.update_privacy_settings_response)
+        ? UpdatePrivacySettingsResponse.fromJSON(object.update_privacy_settings_response)
+        : undefined,
+      acceptChatRequestResponse: isSet(object.acceptChatRequestResponse)
+        ? AcceptChatRequestResponse.fromJSON(object.acceptChatRequestResponse)
+        : isSet(object.accept_chat_request_response)
+        ? AcceptChatRequestResponse.fromJSON(object.accept_chat_request_response)
+        : undefined,
+      blockIdentityResponse: isSet(object.blockIdentityResponse)
+        ? BlockIdentityResponse.fromJSON(object.blockIdentityResponse)
+        : isSet(object.block_identity_response)
+        ? BlockIdentityResponse.fromJSON(object.block_identity_response)
+        : undefined,
+      unblockIdentityResponse: isSet(object.unblockIdentityResponse)
+        ? UnblockIdentityResponse.fromJSON(object.unblockIdentityResponse)
+        : isSet(object.unblock_identity_response)
+        ? UnblockIdentityResponse.fromJSON(object.unblock_identity_response)
+        : undefined,
+      chatRequestReceived: isSet(object.chatRequestReceived)
+        ? ChatRequestReceivedEvent.fromJSON(object.chatRequestReceived)
+        : isSet(object.chat_request_received)
+        ? ChatRequestReceivedEvent.fromJSON(object.chat_request_received)
+        : undefined,
+      checkBlockedResponse: isSet(object.checkBlockedResponse)
+        ? CheckBlockedResponse.fromJSON(object.checkBlockedResponse)
+        : isSet(object.check_blocked_response)
+        ? CheckBlockedResponse.fromJSON(object.check_blocked_response)
+        : undefined,
+      acceptGroupInviteResponse: isSet(object.acceptGroupInviteResponse)
+        ? AcceptGroupInviteResponse.fromJSON(object.acceptGroupInviteResponse)
+        : isSet(object.accept_group_invite_response)
+        ? AcceptGroupInviteResponse.fromJSON(object.accept_group_invite_response)
+        : undefined,
+      declineGroupInviteResponse: isSet(object.declineGroupInviteResponse)
+        ? DeclineGroupInviteResponse.fromJSON(object.declineGroupInviteResponse)
+        : isSet(object.decline_group_invite_response)
+        ? DeclineGroupInviteResponse.fromJSON(object.decline_group_invite_response)
+        : undefined,
+      groupInviteReceived: isSet(object.groupInviteReceived)
+        ? GroupInviteReceivedEvent.fromJSON(object.groupInviteReceived)
+        : isSet(object.group_invite_received)
+        ? GroupInviteReceivedEvent.fromJSON(object.group_invite_received)
+        : undefined,
     };
   },
 
@@ -5336,6 +5819,33 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.authChallenge !== undefined) {
       obj.authChallenge = AuthChallenge.toJSON(message.authChallenge);
+    }
+    if (message.updatePrivacySettingsResponse !== undefined) {
+      obj.updatePrivacySettingsResponse = UpdatePrivacySettingsResponse.toJSON(message.updatePrivacySettingsResponse);
+    }
+    if (message.acceptChatRequestResponse !== undefined) {
+      obj.acceptChatRequestResponse = AcceptChatRequestResponse.toJSON(message.acceptChatRequestResponse);
+    }
+    if (message.blockIdentityResponse !== undefined) {
+      obj.blockIdentityResponse = BlockIdentityResponse.toJSON(message.blockIdentityResponse);
+    }
+    if (message.unblockIdentityResponse !== undefined) {
+      obj.unblockIdentityResponse = UnblockIdentityResponse.toJSON(message.unblockIdentityResponse);
+    }
+    if (message.chatRequestReceived !== undefined) {
+      obj.chatRequestReceived = ChatRequestReceivedEvent.toJSON(message.chatRequestReceived);
+    }
+    if (message.checkBlockedResponse !== undefined) {
+      obj.checkBlockedResponse = CheckBlockedResponse.toJSON(message.checkBlockedResponse);
+    }
+    if (message.acceptGroupInviteResponse !== undefined) {
+      obj.acceptGroupInviteResponse = AcceptGroupInviteResponse.toJSON(message.acceptGroupInviteResponse);
+    }
+    if (message.declineGroupInviteResponse !== undefined) {
+      obj.declineGroupInviteResponse = DeclineGroupInviteResponse.toJSON(message.declineGroupInviteResponse);
+    }
+    if (message.groupInviteReceived !== undefined) {
+      obj.groupInviteReceived = GroupInviteReceivedEvent.toJSON(message.groupInviteReceived);
     }
     return obj;
   },
@@ -5469,6 +5979,39 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : undefined;
     message.authChallenge = (object.authChallenge !== undefined && object.authChallenge !== null)
       ? AuthChallenge.fromPartial(object.authChallenge)
+      : undefined;
+    message.updatePrivacySettingsResponse =
+      (object.updatePrivacySettingsResponse !== undefined && object.updatePrivacySettingsResponse !== null)
+        ? UpdatePrivacySettingsResponse.fromPartial(object.updatePrivacySettingsResponse)
+        : undefined;
+    message.acceptChatRequestResponse =
+      (object.acceptChatRequestResponse !== undefined && object.acceptChatRequestResponse !== null)
+        ? AcceptChatRequestResponse.fromPartial(object.acceptChatRequestResponse)
+        : undefined;
+    message.blockIdentityResponse =
+      (object.blockIdentityResponse !== undefined && object.blockIdentityResponse !== null)
+        ? BlockIdentityResponse.fromPartial(object.blockIdentityResponse)
+        : undefined;
+    message.unblockIdentityResponse =
+      (object.unblockIdentityResponse !== undefined && object.unblockIdentityResponse !== null)
+        ? UnblockIdentityResponse.fromPartial(object.unblockIdentityResponse)
+        : undefined;
+    message.chatRequestReceived = (object.chatRequestReceived !== undefined && object.chatRequestReceived !== null)
+      ? ChatRequestReceivedEvent.fromPartial(object.chatRequestReceived)
+      : undefined;
+    message.checkBlockedResponse = (object.checkBlockedResponse !== undefined && object.checkBlockedResponse !== null)
+      ? CheckBlockedResponse.fromPartial(object.checkBlockedResponse)
+      : undefined;
+    message.acceptGroupInviteResponse =
+      (object.acceptGroupInviteResponse !== undefined && object.acceptGroupInviteResponse !== null)
+        ? AcceptGroupInviteResponse.fromPartial(object.acceptGroupInviteResponse)
+        : undefined;
+    message.declineGroupInviteResponse =
+      (object.declineGroupInviteResponse !== undefined && object.declineGroupInviteResponse !== null)
+        ? DeclineGroupInviteResponse.fromPartial(object.declineGroupInviteResponse)
+        : undefined;
+    message.groupInviteReceived = (object.groupInviteReceived !== undefined && object.groupInviteReceived !== null)
+      ? GroupInviteReceivedEvent.fromPartial(object.groupInviteReceived)
       : undefined;
     return message;
   },
@@ -7287,6 +7830,7 @@ function createBaseAuthResponse(): AuthResponse {
     profile: undefined,
     profileStatus: "",
     pending: undefined,
+    settings: undefined,
   };
 }
 
@@ -7315,6 +7859,9 @@ export const AuthResponse: MessageFns<AuthResponse> = {
     }
     if (message.pending !== undefined) {
       AuthResponse_Pending.encode(message.pending, writer.uint32(66).fork()).join();
+    }
+    if (message.settings !== undefined) {
+      PrivacySettings.encode(message.settings, writer.uint32(74).fork()).join();
     }
     return writer;
   },
@@ -7390,6 +7937,14 @@ export const AuthResponse: MessageFns<AuthResponse> = {
           message.pending = AuthResponse_Pending.decode(reader, reader.uint32());
           continue;
         }
+        case 9: {
+          if (tag !== 74) {
+            break;
+          }
+
+          message.settings = PrivacySettings.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -7413,6 +7968,7 @@ export const AuthResponse: MessageFns<AuthResponse> = {
         ? globalThis.String(object.profile_status)
         : "",
       pending: isSet(object.pending) ? AuthResponse_Pending.fromJSON(object.pending) : undefined,
+      settings: isSet(object.settings) ? PrivacySettings.fromJSON(object.settings) : undefined,
     };
   },
 
@@ -7442,6 +7998,9 @@ export const AuthResponse: MessageFns<AuthResponse> = {
     if (message.pending !== undefined) {
       obj.pending = AuthResponse_Pending.toJSON(message.pending);
     }
+    if (message.settings !== undefined) {
+      obj.settings = PrivacySettings.toJSON(message.settings);
+    }
     return obj;
   },
 
@@ -7469,6 +8028,9 @@ export const AuthResponse: MessageFns<AuthResponse> = {
     message.profileStatus = object.profileStatus ?? "";
     message.pending = (object.pending !== undefined && object.pending !== null)
       ? AuthResponse_Pending.fromPartial(object.pending)
+      : undefined;
+    message.settings = (object.settings !== undefined && object.settings !== null)
+      ? PrivacySettings.fromPartial(object.settings)
       : undefined;
     return message;
   },
@@ -8185,7 +8747,7 @@ export const Meta_Modes: MessageFns<Meta_Modes> = {
 };
 
 function createBaseCreateChatResponse(): CreateChatResponse {
-  return { chat: undefined, status: undefined };
+  return { chat: undefined, status: undefined, pendingInvitees: [] };
 }
 
 export const CreateChatResponse: MessageFns<CreateChatResponse> = {
@@ -8195,6 +8757,9 @@ export const CreateChatResponse: MessageFns<CreateChatResponse> = {
     }
     if (message.status !== undefined) {
       ResponseStatus.encode(message.status, writer.uint32(18).fork()).join();
+    }
+    for (const v of message.pendingInvitees) {
+      writer.uint32(26).string(v!);
     }
     return writer;
   },
@@ -8222,6 +8787,14 @@ export const CreateChatResponse: MessageFns<CreateChatResponse> = {
           message.status = ResponseStatus.decode(reader, reader.uint32());
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.pendingInvitees.push(reader.string());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8235,6 +8808,11 @@ export const CreateChatResponse: MessageFns<CreateChatResponse> = {
     return {
       chat: isSet(object.chat) ? ChatInfo.fromJSON(object.chat) : undefined,
       status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      pendingInvitees: globalThis.Array.isArray(object?.pendingInvitees)
+        ? object.pendingInvitees.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.pending_invitees)
+        ? object.pending_invitees.map((e: any) => globalThis.String(e))
+        : [],
     };
   },
 
@@ -8245,6 +8823,9 @@ export const CreateChatResponse: MessageFns<CreateChatResponse> = {
     }
     if (message.status !== undefined) {
       obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.pendingInvitees?.length) {
+      obj.pendingInvitees = message.pendingInvitees;
     }
     return obj;
   },
@@ -8258,6 +8839,7 @@ export const CreateChatResponse: MessageFns<CreateChatResponse> = {
     message.status = (object.status !== undefined && object.status !== null)
       ? ResponseStatus.fromPartial(object.status)
       : undefined;
+    message.pendingInvitees = object.pendingInvitees?.map((e) => e) || [];
     return message;
   },
 };
@@ -8751,6 +9333,453 @@ export const AccountSymKeys_DevicesEntry: MessageFns<AccountSymKeys_DevicesEntry
     message.key = object.key ?? "";
     message.value = (object.value !== undefined && object.value !== null)
       ? SymKeyEncrypted.fromPartial(object.value)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseAcceptChatRequest(): AcceptChatRequest {
+  return { fromIdentity: "", meta: undefined, symKeyEncrypted: {} };
+}
+
+export const AcceptChatRequest: MessageFns<AcceptChatRequest> = {
+  encode(message: AcceptChatRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.fromIdentity !== "") {
+      writer.uint32(10).string(message.fromIdentity);
+    }
+    if (message.meta !== undefined) {
+      Meta.encode(message.meta, writer.uint32(18).fork()).join();
+    }
+    globalThis.Object.entries(message.symKeyEncrypted).forEach(([key, value]: [string, AccountSymKeys]) => {
+      AcceptChatRequest_SymKeyEncryptedEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
+    });
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AcceptChatRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAcceptChatRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.fromIdentity = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.meta = Meta.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          const entry3 = AcceptChatRequest_SymKeyEncryptedEntry.decode(reader, reader.uint32());
+          if (entry3.value !== undefined) {
+            message.symKeyEncrypted[entry3.key] = entry3.value;
+          }
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AcceptChatRequest {
+    return {
+      fromIdentity: isSet(object.fromIdentity)
+        ? globalThis.String(object.fromIdentity)
+        : isSet(object.from_identity)
+        ? globalThis.String(object.from_identity)
+        : "",
+      meta: isSet(object.meta) ? Meta.fromJSON(object.meta) : undefined,
+      symKeyEncrypted: isObject(object.symKeyEncrypted)
+        ? (globalThis.Object.entries(object.symKeyEncrypted) as [string, any][]).reduce(
+          (acc: { [key: string]: AccountSymKeys }, [key, value]: [string, any]) => {
+            acc[key] = AccountSymKeys.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : isObject(object.sym_key_encrypted)
+        ? (globalThis.Object.entries(object.sym_key_encrypted) as [string, any][]).reduce(
+          (acc: { [key: string]: AccountSymKeys }, [key, value]: [string, any]) => {
+            acc[key] = AccountSymKeys.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
+    };
+  },
+
+  toJSON(message: AcceptChatRequest): unknown {
+    const obj: any = {};
+    if (message.fromIdentity !== "") {
+      obj.fromIdentity = message.fromIdentity;
+    }
+    if (message.meta !== undefined) {
+      obj.meta = Meta.toJSON(message.meta);
+    }
+    if (message.symKeyEncrypted) {
+      const entries = globalThis.Object.entries(message.symKeyEncrypted) as [string, AccountSymKeys][];
+      if (entries.length > 0) {
+        obj.symKeyEncrypted = {};
+        entries.forEach(([k, v]) => {
+          obj.symKeyEncrypted[k] = AccountSymKeys.toJSON(v);
+        });
+      }
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AcceptChatRequest>, I>>(base?: I): AcceptChatRequest {
+    return AcceptChatRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AcceptChatRequest>, I>>(object: I): AcceptChatRequest {
+    const message = createBaseAcceptChatRequest();
+    message.fromIdentity = object.fromIdentity ?? "";
+    message.meta = (object.meta !== undefined && object.meta !== null) ? Meta.fromPartial(object.meta) : undefined;
+    message.symKeyEncrypted = (globalThis.Object.entries(object.symKeyEncrypted ?? {}) as [string, AccountSymKeys][])
+      .reduce((acc: { [key: string]: AccountSymKeys }, [key, value]: [string, AccountSymKeys]) => {
+        if (value !== undefined) {
+          acc[key] = AccountSymKeys.fromPartial(value);
+        }
+        return acc;
+      }, {});
+    return message;
+  },
+};
+
+function createBaseAcceptChatRequest_SymKeyEncryptedEntry(): AcceptChatRequest_SymKeyEncryptedEntry {
+  return { key: "", value: undefined };
+}
+
+export const AcceptChatRequest_SymKeyEncryptedEntry: MessageFns<AcceptChatRequest_SymKeyEncryptedEntry> = {
+  encode(message: AcceptChatRequest_SymKeyEncryptedEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== undefined) {
+      AccountSymKeys.encode(message.value, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AcceptChatRequest_SymKeyEncryptedEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAcceptChatRequest_SymKeyEncryptedEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.value = AccountSymKeys.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AcceptChatRequest_SymKeyEncryptedEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? AccountSymKeys.fromJSON(object.value) : undefined,
+    };
+  },
+
+  toJSON(message: AcceptChatRequest_SymKeyEncryptedEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== undefined) {
+      obj.value = AccountSymKeys.toJSON(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AcceptChatRequest_SymKeyEncryptedEntry>, I>>(
+    base?: I,
+  ): AcceptChatRequest_SymKeyEncryptedEntry {
+    return AcceptChatRequest_SymKeyEncryptedEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AcceptChatRequest_SymKeyEncryptedEntry>, I>>(
+    object: I,
+  ): AcceptChatRequest_SymKeyEncryptedEntry {
+    const message = createBaseAcceptChatRequest_SymKeyEncryptedEntry();
+    message.key = object.key ?? "";
+    message.value = (object.value !== undefined && object.value !== null)
+      ? AccountSymKeys.fromPartial(object.value)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseAcceptChatRequestResponse(): AcceptChatRequestResponse {
+  return { status: undefined, chat: undefined };
+}
+
+export const AcceptChatRequestResponse: MessageFns<AcceptChatRequestResponse> = {
+  encode(message: AcceptChatRequestResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.chat !== undefined) {
+      ChatInfo.encode(message.chat, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AcceptChatRequestResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAcceptChatRequestResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chat = ChatInfo.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AcceptChatRequestResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      chat: isSet(object.chat) ? ChatInfo.fromJSON(object.chat) : undefined,
+    };
+  },
+
+  toJSON(message: AcceptChatRequestResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.chat !== undefined) {
+      obj.chat = ChatInfo.toJSON(message.chat);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AcceptChatRequestResponse>, I>>(base?: I): AcceptChatRequestResponse {
+    return AcceptChatRequestResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AcceptChatRequestResponse>, I>>(object: I): AcceptChatRequestResponse {
+    const message = createBaseAcceptChatRequestResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.chat = (object.chat !== undefined && object.chat !== null) ? ChatInfo.fromPartial(object.chat) : undefined;
+    return message;
+  },
+};
+
+function createBasePendingChatRequest(): PendingChatRequest {
+  return { fromIdentity: "", meta: undefined, requestedAt: 0 };
+}
+
+export const PendingChatRequest: MessageFns<PendingChatRequest> = {
+  encode(message: PendingChatRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.fromIdentity !== "") {
+      writer.uint32(10).string(message.fromIdentity);
+    }
+    if (message.meta !== undefined) {
+      Meta.encode(message.meta, writer.uint32(18).fork()).join();
+    }
+    if (message.requestedAt !== 0) {
+      writer.uint32(24).int64(message.requestedAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PendingChatRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePendingChatRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.fromIdentity = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.meta = Meta.decode(reader, reader.uint32());
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.requestedAt = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PendingChatRequest {
+    return {
+      fromIdentity: isSet(object.fromIdentity)
+        ? globalThis.String(object.fromIdentity)
+        : isSet(object.from_identity)
+        ? globalThis.String(object.from_identity)
+        : "",
+      meta: isSet(object.meta) ? Meta.fromJSON(object.meta) : undefined,
+      requestedAt: isSet(object.requestedAt)
+        ? globalThis.Number(object.requestedAt)
+        : isSet(object.requested_at)
+        ? globalThis.Number(object.requested_at)
+        : 0,
+    };
+  },
+
+  toJSON(message: PendingChatRequest): unknown {
+    const obj: any = {};
+    if (message.fromIdentity !== "") {
+      obj.fromIdentity = message.fromIdentity;
+    }
+    if (message.meta !== undefined) {
+      obj.meta = Meta.toJSON(message.meta);
+    }
+    if (message.requestedAt !== 0) {
+      obj.requestedAt = Math.round(message.requestedAt);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PendingChatRequest>, I>>(base?: I): PendingChatRequest {
+    return PendingChatRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PendingChatRequest>, I>>(object: I): PendingChatRequest {
+    const message = createBasePendingChatRequest();
+    message.fromIdentity = object.fromIdentity ?? "";
+    message.meta = (object.meta !== undefined && object.meta !== null) ? Meta.fromPartial(object.meta) : undefined;
+    message.requestedAt = object.requestedAt ?? 0;
+    return message;
+  },
+};
+
+function createBaseChatRequestReceivedEvent(): ChatRequestReceivedEvent {
+  return { request: undefined };
+}
+
+export const ChatRequestReceivedEvent: MessageFns<ChatRequestReceivedEvent> = {
+  encode(message: ChatRequestReceivedEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.request !== undefined) {
+      PendingChatRequest.encode(message.request, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ChatRequestReceivedEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseChatRequestReceivedEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.request = PendingChatRequest.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ChatRequestReceivedEvent {
+    return { request: isSet(object.request) ? PendingChatRequest.fromJSON(object.request) : undefined };
+  },
+
+  toJSON(message: ChatRequestReceivedEvent): unknown {
+    const obj: any = {};
+    if (message.request !== undefined) {
+      obj.request = PendingChatRequest.toJSON(message.request);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ChatRequestReceivedEvent>, I>>(base?: I): ChatRequestReceivedEvent {
+    return ChatRequestReceivedEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ChatRequestReceivedEvent>, I>>(object: I): ChatRequestReceivedEvent {
+    const message = createBaseChatRequestReceivedEvent();
+    message.request = (object.request !== undefined && object.request !== null)
+      ? PendingChatRequest.fromPartial(object.request)
       : undefined;
     return message;
   },
@@ -9282,7 +10311,7 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
 };
 
 function createBaseQueryChatsResponse(): QueryChatsResponse {
-  return { status: undefined, account: "", results: [] };
+  return { status: undefined, account: "", results: [], pendingChatRequests: [], pendingGroupInvites: [] };
 }
 
 export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
@@ -9295,6 +10324,12 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
     }
     for (const v of message.results) {
       ChatSyncResult.encode(v!, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.pendingChatRequests) {
+      PendingChatRequest.encode(v!, writer.uint32(34).fork()).join();
+    }
+    for (const v of message.pendingGroupInvites) {
+      PendingGroupInvite.encode(v!, writer.uint32(42).fork()).join();
     }
     return writer;
   },
@@ -9330,6 +10365,22 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
           message.results.push(ChatSyncResult.decode(reader, reader.uint32()));
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.pendingChatRequests.push(PendingChatRequest.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.pendingGroupInvites.push(PendingGroupInvite.decode(reader, reader.uint32()));
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -9346,6 +10397,16 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
       results: globalThis.Array.isArray(object?.results)
         ? object.results.map((e: any) => ChatSyncResult.fromJSON(e))
         : [],
+      pendingChatRequests: globalThis.Array.isArray(object?.pendingChatRequests)
+        ? object.pendingChatRequests.map((e: any) => PendingChatRequest.fromJSON(e))
+        : globalThis.Array.isArray(object?.pending_chat_requests)
+        ? object.pending_chat_requests.map((e: any) => PendingChatRequest.fromJSON(e))
+        : [],
+      pendingGroupInvites: globalThis.Array.isArray(object?.pendingGroupInvites)
+        ? object.pendingGroupInvites.map((e: any) => PendingGroupInvite.fromJSON(e))
+        : globalThis.Array.isArray(object?.pending_group_invites)
+        ? object.pending_group_invites.map((e: any) => PendingGroupInvite.fromJSON(e))
+        : [],
     };
   },
 
@@ -9360,6 +10421,12 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
     if (message.results?.length) {
       obj.results = message.results.map((e) => ChatSyncResult.toJSON(e));
     }
+    if (message.pendingChatRequests?.length) {
+      obj.pendingChatRequests = message.pendingChatRequests.map((e) => PendingChatRequest.toJSON(e));
+    }
+    if (message.pendingGroupInvites?.length) {
+      obj.pendingGroupInvites = message.pendingGroupInvites.map((e) => PendingGroupInvite.toJSON(e));
+    }
     return obj;
   },
 
@@ -9373,6 +10440,8 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
       : undefined;
     message.account = object.account ?? "";
     message.results = object.results?.map((e) => ChatSyncResult.fromPartial(e)) || [];
+    message.pendingChatRequests = object.pendingChatRequests?.map((e) => PendingChatRequest.fromPartial(e)) || [];
+    message.pendingGroupInvites = object.pendingGroupInvites?.map((e) => PendingGroupInvite.fromPartial(e)) || [];
     return message;
   },
 };
@@ -10023,6 +11092,1311 @@ export const ProfileUpdatedEvent: MessageFns<ProfileUpdatedEvent> = {
     message.profile = (object.profile !== undefined && object.profile !== null)
       ? Profile.fromPartial(object.profile)
       : undefined;
+    return message;
+  },
+};
+
+function createBaseUpdatePrivacySettings(): UpdatePrivacySettings {
+  return { requireChatApproval: undefined };
+}
+
+export const UpdatePrivacySettings: MessageFns<UpdatePrivacySettings> = {
+  encode(message: UpdatePrivacySettings, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requireChatApproval !== undefined) {
+      writer.uint32(8).bool(message.requireChatApproval);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdatePrivacySettings {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdatePrivacySettings();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.requireChatApproval = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdatePrivacySettings {
+    return {
+      requireChatApproval: isSet(object.requireChatApproval)
+        ? globalThis.Boolean(object.requireChatApproval)
+        : isSet(object.require_chat_approval)
+        ? globalThis.Boolean(object.require_chat_approval)
+        : undefined,
+    };
+  },
+
+  toJSON(message: UpdatePrivacySettings): unknown {
+    const obj: any = {};
+    if (message.requireChatApproval !== undefined) {
+      obj.requireChatApproval = message.requireChatApproval;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UpdatePrivacySettings>, I>>(base?: I): UpdatePrivacySettings {
+    return UpdatePrivacySettings.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UpdatePrivacySettings>, I>>(object: I): UpdatePrivacySettings {
+    const message = createBaseUpdatePrivacySettings();
+    message.requireChatApproval = object.requireChatApproval ?? undefined;
+    return message;
+  },
+};
+
+function createBasePrivacySettings(): PrivacySettings {
+  return { requireChatApproval: false, updatedAt: 0 };
+}
+
+export const PrivacySettings: MessageFns<PrivacySettings> = {
+  encode(message: PrivacySettings, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requireChatApproval !== false) {
+      writer.uint32(8).bool(message.requireChatApproval);
+    }
+    if (message.updatedAt !== 0) {
+      writer.uint32(16).int64(message.updatedAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PrivacySettings {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePrivacySettings();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.requireChatApproval = reader.bool();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.updatedAt = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PrivacySettings {
+    return {
+      requireChatApproval: isSet(object.requireChatApproval)
+        ? globalThis.Boolean(object.requireChatApproval)
+        : isSet(object.require_chat_approval)
+        ? globalThis.Boolean(object.require_chat_approval)
+        : false,
+      updatedAt: isSet(object.updatedAt)
+        ? globalThis.Number(object.updatedAt)
+        : isSet(object.updated_at)
+        ? globalThis.Number(object.updated_at)
+        : 0,
+    };
+  },
+
+  toJSON(message: PrivacySettings): unknown {
+    const obj: any = {};
+    if (message.requireChatApproval !== false) {
+      obj.requireChatApproval = message.requireChatApproval;
+    }
+    if (message.updatedAt !== 0) {
+      obj.updatedAt = Math.round(message.updatedAt);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PrivacySettings>, I>>(base?: I): PrivacySettings {
+    return PrivacySettings.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PrivacySettings>, I>>(object: I): PrivacySettings {
+    const message = createBasePrivacySettings();
+    message.requireChatApproval = object.requireChatApproval ?? false;
+    message.updatedAt = object.updatedAt ?? 0;
+    return message;
+  },
+};
+
+function createBaseUpdatePrivacySettingsResponse(): UpdatePrivacySettingsResponse {
+  return { status: undefined, settings: undefined };
+}
+
+export const UpdatePrivacySettingsResponse: MessageFns<UpdatePrivacySettingsResponse> = {
+  encode(message: UpdatePrivacySettingsResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.settings !== undefined) {
+      PrivacySettings.encode(message.settings, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdatePrivacySettingsResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdatePrivacySettingsResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.settings = PrivacySettings.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdatePrivacySettingsResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      settings: isSet(object.settings) ? PrivacySettings.fromJSON(object.settings) : undefined,
+    };
+  },
+
+  toJSON(message: UpdatePrivacySettingsResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.settings !== undefined) {
+      obj.settings = PrivacySettings.toJSON(message.settings);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UpdatePrivacySettingsResponse>, I>>(base?: I): UpdatePrivacySettingsResponse {
+    return UpdatePrivacySettingsResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UpdatePrivacySettingsResponse>, I>>(
+    object: I,
+  ): UpdatePrivacySettingsResponse {
+    const message = createBaseUpdatePrivacySettingsResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.settings = (object.settings !== undefined && object.settings !== null)
+      ? PrivacySettings.fromPartial(object.settings)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseBlockIdentity(): BlockIdentity {
+  return { targetIdentity: "" };
+}
+
+export const BlockIdentity: MessageFns<BlockIdentity> = {
+  encode(message: BlockIdentity, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.targetIdentity !== "") {
+      writer.uint32(10).string(message.targetIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockIdentity {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockIdentity();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.targetIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockIdentity {
+    return {
+      targetIdentity: isSet(object.targetIdentity)
+        ? globalThis.String(object.targetIdentity)
+        : isSet(object.target_identity)
+        ? globalThis.String(object.target_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: BlockIdentity): unknown {
+    const obj: any = {};
+    if (message.targetIdentity !== "") {
+      obj.targetIdentity = message.targetIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockIdentity>, I>>(base?: I): BlockIdentity {
+    return BlockIdentity.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockIdentity>, I>>(object: I): BlockIdentity {
+    const message = createBaseBlockIdentity();
+    message.targetIdentity = object.targetIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseBlockIdentityResponse(): BlockIdentityResponse {
+  return { status: undefined, targetIdentity: "" };
+}
+
+export const BlockIdentityResponse: MessageFns<BlockIdentityResponse> = {
+  encode(message: BlockIdentityResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.targetIdentity !== "") {
+      writer.uint32(18).string(message.targetIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockIdentityResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockIdentityResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.targetIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockIdentityResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      targetIdentity: isSet(object.targetIdentity)
+        ? globalThis.String(object.targetIdentity)
+        : isSet(object.target_identity)
+        ? globalThis.String(object.target_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: BlockIdentityResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.targetIdentity !== "") {
+      obj.targetIdentity = message.targetIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockIdentityResponse>, I>>(base?: I): BlockIdentityResponse {
+    return BlockIdentityResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockIdentityResponse>, I>>(object: I): BlockIdentityResponse {
+    const message = createBaseBlockIdentityResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.targetIdentity = object.targetIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseUnblockIdentity(): UnblockIdentity {
+  return { targetIdentity: "" };
+}
+
+export const UnblockIdentity: MessageFns<UnblockIdentity> = {
+  encode(message: UnblockIdentity, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.targetIdentity !== "") {
+      writer.uint32(10).string(message.targetIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UnblockIdentity {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUnblockIdentity();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.targetIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UnblockIdentity {
+    return {
+      targetIdentity: isSet(object.targetIdentity)
+        ? globalThis.String(object.targetIdentity)
+        : isSet(object.target_identity)
+        ? globalThis.String(object.target_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: UnblockIdentity): unknown {
+    const obj: any = {};
+    if (message.targetIdentity !== "") {
+      obj.targetIdentity = message.targetIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UnblockIdentity>, I>>(base?: I): UnblockIdentity {
+    return UnblockIdentity.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UnblockIdentity>, I>>(object: I): UnblockIdentity {
+    const message = createBaseUnblockIdentity();
+    message.targetIdentity = object.targetIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseUnblockIdentityResponse(): UnblockIdentityResponse {
+  return { status: undefined, targetIdentity: "" };
+}
+
+export const UnblockIdentityResponse: MessageFns<UnblockIdentityResponse> = {
+  encode(message: UnblockIdentityResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.targetIdentity !== "") {
+      writer.uint32(18).string(message.targetIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UnblockIdentityResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUnblockIdentityResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.targetIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UnblockIdentityResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      targetIdentity: isSet(object.targetIdentity)
+        ? globalThis.String(object.targetIdentity)
+        : isSet(object.target_identity)
+        ? globalThis.String(object.target_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: UnblockIdentityResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.targetIdentity !== "") {
+      obj.targetIdentity = message.targetIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UnblockIdentityResponse>, I>>(base?: I): UnblockIdentityResponse {
+    return UnblockIdentityResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UnblockIdentityResponse>, I>>(object: I): UnblockIdentityResponse {
+    const message = createBaseUnblockIdentityResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.targetIdentity = object.targetIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseCheckBlocked(): CheckBlocked {
+  return { ownerIdentity: "", senderIdentity: "" };
+}
+
+export const CheckBlocked: MessageFns<CheckBlocked> = {
+  encode(message: CheckBlocked, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.ownerIdentity !== "") {
+      writer.uint32(10).string(message.ownerIdentity);
+    }
+    if (message.senderIdentity !== "") {
+      writer.uint32(18).string(message.senderIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CheckBlocked {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCheckBlocked();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.ownerIdentity = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.senderIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CheckBlocked {
+    return {
+      ownerIdentity: isSet(object.ownerIdentity)
+        ? globalThis.String(object.ownerIdentity)
+        : isSet(object.owner_identity)
+        ? globalThis.String(object.owner_identity)
+        : "",
+      senderIdentity: isSet(object.senderIdentity)
+        ? globalThis.String(object.senderIdentity)
+        : isSet(object.sender_identity)
+        ? globalThis.String(object.sender_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: CheckBlocked): unknown {
+    const obj: any = {};
+    if (message.ownerIdentity !== "") {
+      obj.ownerIdentity = message.ownerIdentity;
+    }
+    if (message.senderIdentity !== "") {
+      obj.senderIdentity = message.senderIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CheckBlocked>, I>>(base?: I): CheckBlocked {
+    return CheckBlocked.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CheckBlocked>, I>>(object: I): CheckBlocked {
+    const message = createBaseCheckBlocked();
+    message.ownerIdentity = object.ownerIdentity ?? "";
+    message.senderIdentity = object.senderIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseAcceptGroupInvite(): AcceptGroupInvite {
+  return { chatId: "", symKeyEncrypted: {} };
+}
+
+export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
+  encode(message: AcceptGroupInvite, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    globalThis.Object.entries(message.symKeyEncrypted).forEach(([key, value]: [string, AccountSymKeys]) => {
+      AcceptGroupInvite_SymKeyEncryptedEntry.encode({ key: key as any, value }, writer.uint32(18).fork()).join();
+    });
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AcceptGroupInvite {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAcceptGroupInvite();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          const entry2 = AcceptGroupInvite_SymKeyEncryptedEntry.decode(reader, reader.uint32());
+          if (entry2.value !== undefined) {
+            message.symKeyEncrypted[entry2.key] = entry2.value;
+          }
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AcceptGroupInvite {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      symKeyEncrypted: isObject(object.symKeyEncrypted)
+        ? (globalThis.Object.entries(object.symKeyEncrypted) as [string, any][]).reduce(
+          (acc: { [key: string]: AccountSymKeys }, [key, value]: [string, any]) => {
+            acc[key] = AccountSymKeys.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : isObject(object.sym_key_encrypted)
+        ? (globalThis.Object.entries(object.sym_key_encrypted) as [string, any][]).reduce(
+          (acc: { [key: string]: AccountSymKeys }, [key, value]: [string, any]) => {
+            acc[key] = AccountSymKeys.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
+    };
+  },
+
+  toJSON(message: AcceptGroupInvite): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.symKeyEncrypted) {
+      const entries = globalThis.Object.entries(message.symKeyEncrypted) as [string, AccountSymKeys][];
+      if (entries.length > 0) {
+        obj.symKeyEncrypted = {};
+        entries.forEach(([k, v]) => {
+          obj.symKeyEncrypted[k] = AccountSymKeys.toJSON(v);
+        });
+      }
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AcceptGroupInvite>, I>>(base?: I): AcceptGroupInvite {
+    return AcceptGroupInvite.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AcceptGroupInvite>, I>>(object: I): AcceptGroupInvite {
+    const message = createBaseAcceptGroupInvite();
+    message.chatId = object.chatId ?? "";
+    message.symKeyEncrypted = (globalThis.Object.entries(object.symKeyEncrypted ?? {}) as [string, AccountSymKeys][])
+      .reduce((acc: { [key: string]: AccountSymKeys }, [key, value]: [string, AccountSymKeys]) => {
+        if (value !== undefined) {
+          acc[key] = AccountSymKeys.fromPartial(value);
+        }
+        return acc;
+      }, {});
+    return message;
+  },
+};
+
+function createBaseAcceptGroupInvite_SymKeyEncryptedEntry(): AcceptGroupInvite_SymKeyEncryptedEntry {
+  return { key: "", value: undefined };
+}
+
+export const AcceptGroupInvite_SymKeyEncryptedEntry: MessageFns<AcceptGroupInvite_SymKeyEncryptedEntry> = {
+  encode(message: AcceptGroupInvite_SymKeyEncryptedEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== undefined) {
+      AccountSymKeys.encode(message.value, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AcceptGroupInvite_SymKeyEncryptedEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAcceptGroupInvite_SymKeyEncryptedEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.value = AccountSymKeys.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AcceptGroupInvite_SymKeyEncryptedEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? AccountSymKeys.fromJSON(object.value) : undefined,
+    };
+  },
+
+  toJSON(message: AcceptGroupInvite_SymKeyEncryptedEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== undefined) {
+      obj.value = AccountSymKeys.toJSON(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AcceptGroupInvite_SymKeyEncryptedEntry>, I>>(
+    base?: I,
+  ): AcceptGroupInvite_SymKeyEncryptedEntry {
+    return AcceptGroupInvite_SymKeyEncryptedEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AcceptGroupInvite_SymKeyEncryptedEntry>, I>>(
+    object: I,
+  ): AcceptGroupInvite_SymKeyEncryptedEntry {
+    const message = createBaseAcceptGroupInvite_SymKeyEncryptedEntry();
+    message.key = object.key ?? "";
+    message.value = (object.value !== undefined && object.value !== null)
+      ? AccountSymKeys.fromPartial(object.value)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseAcceptGroupInviteResponse(): AcceptGroupInviteResponse {
+  return { status: undefined, chatId: "", chatVersion: 0 };
+}
+
+export const AcceptGroupInviteResponse: MessageFns<AcceptGroupInviteResponse> = {
+  encode(message: AcceptGroupInviteResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.chatId !== "") {
+      writer.uint32(18).string(message.chatId);
+    }
+    if (message.chatVersion !== 0) {
+      writer.uint32(24).uint64(message.chatVersion);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AcceptGroupInviteResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAcceptGroupInviteResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.chatVersion = longToNumber(reader.uint64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AcceptGroupInviteResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      chatVersion: isSet(object.chatVersion)
+        ? globalThis.Number(object.chatVersion)
+        : isSet(object.chat_version)
+        ? globalThis.Number(object.chat_version)
+        : 0,
+    };
+  },
+
+  toJSON(message: AcceptGroupInviteResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.chatVersion !== 0) {
+      obj.chatVersion = Math.round(message.chatVersion);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AcceptGroupInviteResponse>, I>>(base?: I): AcceptGroupInviteResponse {
+    return AcceptGroupInviteResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AcceptGroupInviteResponse>, I>>(object: I): AcceptGroupInviteResponse {
+    const message = createBaseAcceptGroupInviteResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.chatId = object.chatId ?? "";
+    message.chatVersion = object.chatVersion ?? 0;
+    return message;
+  },
+};
+
+function createBaseDeclineGroupInvite(): DeclineGroupInvite {
+  return { chatId: "" };
+}
+
+export const DeclineGroupInvite: MessageFns<DeclineGroupInvite> = {
+  encode(message: DeclineGroupInvite, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeclineGroupInvite {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeclineGroupInvite();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeclineGroupInvite {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+    };
+  },
+
+  toJSON(message: DeclineGroupInvite): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeclineGroupInvite>, I>>(base?: I): DeclineGroupInvite {
+    return DeclineGroupInvite.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeclineGroupInvite>, I>>(object: I): DeclineGroupInvite {
+    const message = createBaseDeclineGroupInvite();
+    message.chatId = object.chatId ?? "";
+    return message;
+  },
+};
+
+function createBaseDeclineGroupInviteResponse(): DeclineGroupInviteResponse {
+  return { status: undefined, chatId: "" };
+}
+
+export const DeclineGroupInviteResponse: MessageFns<DeclineGroupInviteResponse> = {
+  encode(message: DeclineGroupInviteResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.chatId !== "") {
+      writer.uint32(18).string(message.chatId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeclineGroupInviteResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeclineGroupInviteResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeclineGroupInviteResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+    };
+  },
+
+  toJSON(message: DeclineGroupInviteResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeclineGroupInviteResponse>, I>>(base?: I): DeclineGroupInviteResponse {
+    return DeclineGroupInviteResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeclineGroupInviteResponse>, I>>(object: I): DeclineGroupInviteResponse {
+    const message = createBaseDeclineGroupInviteResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.chatId = object.chatId ?? "";
+    return message;
+  },
+};
+
+function createBasePendingGroupInvite(): PendingGroupInvite {
+  return { chatId: "", invitedBy: "", meta: undefined, invitedAt: 0 };
+}
+
+export const PendingGroupInvite: MessageFns<PendingGroupInvite> = {
+  encode(message: PendingGroupInvite, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    if (message.invitedBy !== "") {
+      writer.uint32(18).string(message.invitedBy);
+    }
+    if (message.meta !== undefined) {
+      Meta.encode(message.meta, writer.uint32(26).fork()).join();
+    }
+    if (message.invitedAt !== 0) {
+      writer.uint32(32).int64(message.invitedAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): PendingGroupInvite {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBasePendingGroupInvite();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.invitedBy = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.meta = Meta.decode(reader, reader.uint32());
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.invitedAt = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): PendingGroupInvite {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      invitedBy: isSet(object.invitedBy)
+        ? globalThis.String(object.invitedBy)
+        : isSet(object.invited_by)
+        ? globalThis.String(object.invited_by)
+        : "",
+      meta: isSet(object.meta) ? Meta.fromJSON(object.meta) : undefined,
+      invitedAt: isSet(object.invitedAt)
+        ? globalThis.Number(object.invitedAt)
+        : isSet(object.invited_at)
+        ? globalThis.Number(object.invited_at)
+        : 0,
+    };
+  },
+
+  toJSON(message: PendingGroupInvite): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.invitedBy !== "") {
+      obj.invitedBy = message.invitedBy;
+    }
+    if (message.meta !== undefined) {
+      obj.meta = Meta.toJSON(message.meta);
+    }
+    if (message.invitedAt !== 0) {
+      obj.invitedAt = Math.round(message.invitedAt);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<PendingGroupInvite>, I>>(base?: I): PendingGroupInvite {
+    return PendingGroupInvite.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<PendingGroupInvite>, I>>(object: I): PendingGroupInvite {
+    const message = createBasePendingGroupInvite();
+    message.chatId = object.chatId ?? "";
+    message.invitedBy = object.invitedBy ?? "";
+    message.meta = (object.meta !== undefined && object.meta !== null) ? Meta.fromPartial(object.meta) : undefined;
+    message.invitedAt = object.invitedAt ?? 0;
+    return message;
+  },
+};
+
+function createBaseGroupInviteReceivedEvent(): GroupInviteReceivedEvent {
+  return { invite: undefined };
+}
+
+export const GroupInviteReceivedEvent: MessageFns<GroupInviteReceivedEvent> = {
+  encode(message: GroupInviteReceivedEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.invite !== undefined) {
+      PendingGroupInvite.encode(message.invite, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GroupInviteReceivedEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGroupInviteReceivedEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.invite = PendingGroupInvite.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GroupInviteReceivedEvent {
+    return { invite: isSet(object.invite) ? PendingGroupInvite.fromJSON(object.invite) : undefined };
+  },
+
+  toJSON(message: GroupInviteReceivedEvent): unknown {
+    const obj: any = {};
+    if (message.invite !== undefined) {
+      obj.invite = PendingGroupInvite.toJSON(message.invite);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GroupInviteReceivedEvent>, I>>(base?: I): GroupInviteReceivedEvent {
+    return GroupInviteReceivedEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GroupInviteReceivedEvent>, I>>(object: I): GroupInviteReceivedEvent {
+    const message = createBaseGroupInviteReceivedEvent();
+    message.invite = (object.invite !== undefined && object.invite !== null)
+      ? PendingGroupInvite.fromPartial(object.invite)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseCheckBlockedResponse(): CheckBlockedResponse {
+  return { status: undefined, blocked: false };
+}
+
+export const CheckBlockedResponse: MessageFns<CheckBlockedResponse> = {
+  encode(message: CheckBlockedResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.blocked !== false) {
+      writer.uint32(16).bool(message.blocked);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CheckBlockedResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCheckBlockedResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.blocked = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CheckBlockedResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      blocked: isSet(object.blocked) ? globalThis.Boolean(object.blocked) : false,
+    };
+  },
+
+  toJSON(message: CheckBlockedResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.blocked !== false) {
+      obj.blocked = message.blocked;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CheckBlockedResponse>, I>>(base?: I): CheckBlockedResponse {
+    return CheckBlockedResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CheckBlockedResponse>, I>>(object: I): CheckBlockedResponse {
+    const message = createBaseCheckBlockedResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.blocked = object.blocked ?? false;
     return message;
   },
 };

@@ -4,6 +4,8 @@ import {
   ChatInfo,
   ClientMessage,
   Envelope,
+  PendingChatRequest,
+  PendingGroupInvite,
   ServerMessage,
 } from "./proto/evergram";
 import { Transport } from "./transport";
@@ -79,7 +81,8 @@ export interface EvergramChatMessage {
 //
 // Events: "connected", "authenticated", "disconnected", "reconnecting" (attempt),
 // "message" (EvergramChatMessage), "typing", "delivery", "chatKeyRotated" ({chatId}),
-// "joinRequested" (JoinRequestedEvent), "restricted" (ReputationUpdated), "error" (Error).
+// "joinRequested" (JoinRequestedEvent), "chatRequestReceived" (PendingChatRequest),
+// "groupInviteReceived" (PendingGroupInvite), "restricted" (ReputationUpdated), "error" (Error).
 export class EvergramCore extends EventEmitter {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
@@ -94,6 +97,8 @@ export class EvergramCore extends EventEmitter {
   private readonly chats = new Map<string, ChatInfo>();
   private readonly symKeys = new Map<string, Uint8Array>();
   private readonly pendingEnvelopes = new Map<string, Envelope[]>();
+  private readonly pendingChatRequests = new Map<string, PendingChatRequest>();
+  private readonly pendingGroupInvites = new Map<string, PendingGroupInvite>();
 
   private authenticated = false;
   isRestricted = false;
@@ -250,6 +255,70 @@ export class EvergramCore extends EventEmitter {
     const resp = await this.requestWithReauth(msg, "createChatResponse");
     if (resp.chat) this.processChatInfo(resp.chat);
     return resp;
+  }
+
+  // Opt-in privacy gate: when the recipient has requireChatApproval set,
+  // createChat() above returns status.code "pending_approval" (no chat) and
+  // queues a PendingChatRequest server-side instead. The recipient accepts
+  // it here, mirroring createChat()'s key-exchange — the gateway resolves
+  // device public keys and seals the symKey, the same as for a fresh chat.
+  async acceptChatRequest(fromIdentity: string) {
+    const msg = ClientMessage.create({ acceptChatRequest: { fromIdentity } });
+
+    const resp = await this.requestWithReauth(msg, "acceptChatRequestResponse");
+    this.pendingChatRequests.delete(fromIdentity);
+    if (resp.chat) this.processChatInfo(resp.chat);
+    return resp;
+  }
+
+  // Identity-indexed, not chat-indexed: also rejects a pending chat request
+  // from `targetIdentity` (no chat is ever created), and is enforced by the
+  // gateway on message delivery for chats that were already accepted.
+  async blockIdentity(targetIdentity: string) {
+    const msg = ClientMessage.create({ blockIdentity: { targetIdentity } });
+    const resp = await this.requestWithReauth(msg, "blockIdentityResponse");
+    this.pendingChatRequests.delete(targetIdentity);
+    return resp;
+  }
+
+  async unblockIdentity(targetIdentity: string) {
+    const msg = ClientMessage.create({ unblockIdentity: { targetIdentity } });
+    return this.requestWithReauth(msg, "unblockIdentityResponse");
+  }
+
+  async updatePrivacySettings(requireChatApproval: boolean) {
+    const msg = ClientMessage.create({ updatePrivacySettings: { requireChatApproval } });
+    return this.requestWithReauth(msg, "updatePrivacySettingsResponse");
+  }
+
+  getPendingChatRequests(): PendingChatRequest[] {
+    return Array.from(this.pendingChatRequests.values());
+  }
+
+  // Group equivalent: addParticipant() below defers to a PendingGroupInvite
+  // (keyed by chatId, not by inviter — the same admin can invite this
+  // identity to several groups) when requireChatApproval is set. The
+  // gateway re-derives symKeyEncrypted fresh at accept time rather than
+  // reusing whatever was sealed when the invite was created, since the
+  // chat's key may have rotated again in the meantime.
+  async acceptGroupInvite(chatId: string) {
+    const msg = ClientMessage.create({ acceptGroupInvite: { chatId } });
+    const resp = await this.requestWithReauth(msg, "acceptGroupInviteResponse");
+    this.pendingGroupInvites.delete(chatId);
+    return resp;
+  }
+
+  // Declines this one invite only — does not block the inviter (use
+  // blockIdentity separately for that).
+  async declineGroupInvite(chatId: string) {
+    const msg = ClientMessage.create({ declineGroupInvite: { chatId } });
+    const resp = await this.requestWithReauth(msg, "declineGroupInviteResponse");
+    this.pendingGroupInvites.delete(chatId);
+    return resp;
+  }
+
+  getPendingGroupInvites(): PendingGroupInvite[] {
+    return Array.from(this.pendingGroupInvites.values());
   }
 
   async sendMessage(chatId: string, text: string) {
@@ -474,11 +543,36 @@ export class EvergramCore extends EventEmitter {
 
     const chatCandidates: ChatInfo[] = [];
     if (msg.createChatResponse?.chat) chatCandidates.push(msg.createChatResponse.chat);
+    if (msg.acceptChatRequestResponse?.chat) chatCandidates.push(msg.acceptChatRequestResponse.chat);
     if (msg.rotateChatVersionResponse?.chat) chatCandidates.push(msg.rotateChatVersionResponse.chat);
     for (const result of msg.queryChatsResponse?.results ?? []) {
       if (result.chat) chatCandidates.push(result.chat);
     }
     for (const chat of chatCandidates) this.processChatInfo(chat);
+
+    // Boot sync: silently merge, mirroring how queryChatsResponse.results
+    // above updates `chats` without emitting per-item events.
+    for (const req of msg.queryChatsResponse?.pendingChatRequests ?? []) {
+      if (req.fromIdentity) this.pendingChatRequests.set(req.fromIdentity, req);
+    }
+
+    // Live push: a CreateChat from another identity is awaiting our
+    // approval right now — this one is event-worthy, mirroring joinRequestedEvent.
+    if (msg.chatRequestReceived?.request) {
+      const req = msg.chatRequestReceived.request;
+      if (req.fromIdentity) this.pendingChatRequests.set(req.fromIdentity, req);
+      this.emit("chatRequestReceived", req);
+    }
+
+    for (const invite of msg.queryChatsResponse?.pendingGroupInvites ?? []) {
+      if (invite.chatId) this.pendingGroupInvites.set(invite.chatId, invite);
+    }
+
+    if (msg.groupInviteReceived?.invite) {
+      const invite = msg.groupInviteReceived.invite;
+      if (invite.chatId) this.pendingGroupInvites.set(invite.chatId, invite);
+      this.emit("groupInviteReceived", invite);
+    }
 
     if (msg.envelope) this.handleEnvelope(msg.envelope);
 
