@@ -16,8 +16,9 @@ end-to-end encrypted messaging, group management, and Discovery.
   control (custom protocols on top, non-chat integrations).
 - **`EvergramBot`** — an ergonomic wrapper over `Core` (`bot.onMessage`,
   `bot.onJoinRequest`, `bot.reply`), in the spirit of Telegraf/Discord.js.
-  Reconnection, re-authentication, key rotation and mailbox delivery are all
-  handled for you. `bot.core` gives you the `Core` escape hatch any time.
+  Reconnection, re-authentication, key rotation, mailbox delivery, and
+  rediscovering chats you were already in are all handled for you. `bot.core`
+  gives you the `Core` escape hatch any time.
 
 Both reuse the same protobuf schema and `tweetnacl` E2EE primitives the
 webapp client uses — see `src/proto/evergram.proto` (copied from
@@ -64,45 +65,50 @@ re-running doesn't orphan chat history under a new identity.
 ## Auth flow (signed_message)
 
 There is no Xaman app in a headless process, so bots authenticate by signing
-a challenge directly with their XRPL wallet key:
+a per-connection challenge directly with their XRPL wallet key:
 
-1. The SDK builds `evergram-auth:{address}:{deviceId}:{unixMinuteTimestamp}`
-   and signs it with the wallet's private key (`wallet.ts#signAuthChallenge`).
-2. It sends `Auth { identity, proof: { signedMessage: { publicKeyHex, signatureHex } }, device }`.
-3. The gateway (`webapp/app/gateway/helpers/verify-signed-message.ts`)
-   recomputes the challenge itself for a small tolerance window around "now"
-   (±2 minutes), verifies the signature against `publicKeyHex`, and confirms
+1. Right after the WebSocket opens, the gateway pushes `ServerMessage.authChallenge { nonce }`
+   — a random value generated for *this connection only*, before the SDK
+   sends anything. `EvergramCore.authenticate()` waits for it.
+2. The SDK builds `evergram-auth:{address}:{deviceId}:{nonce}` and signs it
+   with the wallet's private key (`wallet.ts#signAuthChallenge`).
+3. It sends `Auth { identity, proof: { signedMessage: { publicKeyHex, signatureHex } }, device }`.
+4. The gateway (`webapp/app/gateway/helpers/verify-signed-message.ts`)
+   recomputes the same challenge from the nonce *it* issued for this
+   connection, verifies the signature against `publicKeyHex`, and confirms
    the address derived from `publicKeyHex` matches `identity.address`.
-4. On a brand-new identity, the contract will reject the very first
+5. On a brand-new identity, the contract will reject the very first
    `authResponse` with `device_not_registered` — `EvergramCore` catches this
    automatically, calls `registerDevice`, and retries once. You don't need
-   to handle this yourself.
+   to handle this yourself (and it doesn't need a new nonce — see below).
 
-**Replay window is intentional, not a bug.** The challenge is timestamp-bound,
-not nonce-based — no server-side nonce storage is needed, but a captured
-`signed_message` can be replayed successfully for the rest of its ~4-minute
-tolerance window. This is an accepted v1 tradeoff (the channel is WSS/TLS,
-and every auth attempt is separately rate-limited — see below), not
-something to "discover" as a bug later. If your threat model needs stronger
-replay protection, that would mean moving to a server-issued nonce — track
-this as a protocol change, not an SDK-side workaround.
+**The nonce is single-use and connection-scoped — no cross-connection
+replay.** It's generated server-side, held only in memory tied to that one
+WebSocket connection, and consumed (deleted) on the first auth attempt,
+success or failure. A signature captured for one connection cannot be
+replayed on a different connection — the gateway only ever compares against
+the nonce *it* issued for *that* connection, which is gone the moment it's
+used (or the connection closes). Any auth failure means reconnecting for a
+fresh nonce; there is deliberately no "retry without reconnecting" path.
+This replaced an earlier timestamp-bucket scheme that had a multi-minute,
+cross-network replay window — found and closed via a dedicated security
+review before this SDK's first real use.
 
 ## Security status
 
-This auth path has **not** gone through a dedicated security review yet.
-Before relying on it for anything beyond local development:
+A dedicated security review of this auth path found no authentication-bypass
+vulnerability. The one design issue it surfaced (timestamp-based challenge
+replayable across connections) has been fixed — see above. Still worth
+knowing before relying on this beyond local development:
 
-1. `verify-signed-message.ts` needs its own focused review — it's the first
-   fully programmatic auth path in this system, distinct from the existing
-   Xaman-JWT path.
-2. The replay-within-window behavior above must be explicitly tested (not
-   assumed) against your deployment: confirm rejection past the tolerance
-   window, and confirm — deliberately — that replay inside the window
-   succeeds.
-3. The gateway logs (`Logger.warn`) after 5 failed signature verifications
-   for the same address within 10 minutes (`rateLimiter.ts`'s
+1. The gateway logs (`Logger.warn`) after 5 failed signature verifications
+   for the same claimed address within 10 minutes (`rateLimiter.ts`'s
    `recordSignedMessageAuthFailure`) — wire this into real alerting before
    depending on it as your only brute-force signal.
+2. This is still the first fully programmatic auth path in this system
+   (distinct from the existing Xaman-JWT path) — treat any further change to
+   `verify-signed-message.ts` or the `AuthChallenge` handshake as worth its
+   own focused review, not bundled into an unrelated PR.
 
 ## Device keys & backup
 
@@ -189,15 +195,64 @@ code if you need it:
   `_sendAndWaitResponse`. Concurrent calls of the *same* method type share
   this limitation; different method types don't collide.
 
-## Verification
+## Testing
 
-What's been run against the local stack (`docker-compose.yml`) while
-building this:
+Two layers — re-run both whenever you touch the wire protocol, the auth
+handshake, or `core.ts`'s request/response plumbing, instead of re-deriving
+verification from scratch by hand:
 
-- Fresh wallet auto-registers + authenticates with no manual `registerDevice` call.
-- Full E2EE round trip: `createChat` → key derivation → `sendMessage` → decrypt on the other side.
-- Key rotation: `chatKeyRotated` fires and post-rotation messages decrypt correctly.
-- Forced disconnect → automatic reconnect → automatic re-authentication.
-- `echo-bot` and `webhook-bridge` run end-to-end against the local gateway.
-- `moderation-bot`'s push→event→`approve()`/`deny()` wiring verified directly (group creation needs a higher access tier than local dev's default — see "Access tiers").
-- `npx tsc --noEmit` clean in both `webapp` and this package.
+```bash
+npm test                 # unit — pure logic, no network, runs anywhere
+npm run test:integration # needs the local stack up at ws://localhost:9000/api/ws (override with EVERGRAM_TEST_WS_URL)
+npm run typecheck:test   # typechecks test/ too — `typecheck` only covers src/examples
+```
+
+**Unit** (`test/unit/`): `wallet.ts`/`crypto.ts` against the real `xrpl`/
+`tweetnacl` libraries, `identity.ts`'s key format, the typed-error mapping
+table, and a byte-for-byte diff between this package's `evergram.proto` and
+webapp's canonical copy — catches exactly the "forgot to re-sync after
+changing the schema" mistake the manual-copy step invites.
+
+**Integration** (`test/integration/`): drives the real local gateway over a
+real WebSocket, deliberately not mocked — a mock would only prove the SDK
+agrees with itself, and the actual risk here is SDK/gateway drift (the
+nonce handshake, the contract's response shapes). The cost is needing the
+local stack up and ~90s of wall-clock time; a single local HotPocket node
+has a real consensus roundtime (`.contractdata/cfg/hp.cfg`), so these files
+run sequentially rather than in parallel to avoid contending with
+themselves.
+
+- `auth.test.ts` — the regression suite for the nonce-based replay-window
+  fix: self-heal register+auth, a signature captured on one connection
+  rejected when replayed on another, a second auth attempt on the same
+  connection rejected once its nonce is consumed. If this ever goes red,
+  the replay window is probably back.
+- `messaging.test.ts` — full E2EE round trip: `createChat` → key derivation
+  on both sides → `sendMessage` → decrypt.
+- `reconnect.test.ts` — Transport's automatic reconnect-with-backoff after a
+  dropped connection, and `requestWithReauth`'s recovery via a fresh
+  connection.
+
+**Caught two real bugs while being written, not while being planned** —
+exactly the case for having this suite instead of re-deriving verification
+by hand each time:
+
+1. `requestWithReauth`'s same-connection reauth (meant to recover from a
+   24h-stale session JWT on a connection that never dropped) hung
+   indefinitely after the nonce redesign, since the gateway only ever pushes
+   `AuthChallenge` once, at connection-open. Fixed in `core.ts` to recover
+   via a fresh connection instead, which always gets a fresh nonce —
+   `reconnect.test.ts` pins this down.
+2. A fresh `EvergramCore` — including every restart of a long-running bot
+   process — started with empty `chats`/`symKeys` maps and **nothing ever
+   re-populated them**: neither `EvergramBot.start()` nor the examples called
+   `syncChats()`, unlike the webapp client (which calls it right after auth
+   — see `evergram-client.ts`'s `ensureAuthSessionReady`). Any message for a
+   chat created before the bot's current process started was silently
+   swallowed: queued in `pendingEnvelopes` and never drained, no error, no
+   log. Fixed by having `Core` call `syncChats()` itself right after every
+   successful `authenticate()` (initial connect *and* every reconnect) —
+   `messaging.test.ts`'s "rediscovers a pre-existing chat... after a fresh
+   process restart" test reproduces the exact symptom and pins the fix down.
+
+`npx tsc --noEmit` is clean in both `webapp` and this package.

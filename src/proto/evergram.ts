@@ -74,14 +74,26 @@ export interface AuthProof {
 /**
  * Direct wallet-signature proof (e.g. XRPL), used by headless/programmatic
  * clients (bots, SDK) that have no Xaman session to obtain a jwt from.
- * The gateway reconstructs the expected challenge string itself
- * ("evergram-auth:{address}:{deviceId}:{unixMinuteTimestamp}") and verifies
- * signature_hex against public_key_hex, then confirms the derived address
- * matches ChainIdentity.address.
+ * The signed challenge is "evergram-auth:{address}:{deviceId}:{nonce}",
+ * where nonce is the one delivered via AuthChallenge for this connection
+ * (see ServerMessage.auth_challenge) — single-use, never reused across
+ * connections. The gateway verifies signature_hex against public_key_hex,
+ * then confirms the derived address matches ChainIdentity.address.
  */
 export interface SignedMessageProof {
   publicKeyHex: string;
   signatureHex: string;
+}
+
+/**
+ * Pushed by the gateway immediately on connection open, before any client
+ * message — the nonce a signed_message proof must include in its challenge
+ * for THIS connection. Single-use: consumed on the first auth attempt
+ * (success or failure); a new connection always gets a fresh one. Ignored
+ * by clients using the jwt proof path.
+ */
+export interface AuthChallenge {
+  nonce: string;
 }
 
 export interface DeviceForceRefresh {
@@ -323,6 +335,7 @@ export interface ServerMessage {
   joinRequestedEvent?: JoinRequestedEvent | undefined;
   setChatDiscoverableResponse?: SetChatDiscoverableResponse | undefined;
   listPublicChatsResponse?: ListPublicChatsResponse | undefined;
+  authChallenge?: AuthChallenge | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -1182,6 +1195,64 @@ export const SignedMessageProof: MessageFns<SignedMessageProof> = {
     const message = createBaseSignedMessageProof();
     message.publicKeyHex = object.publicKeyHex ?? "";
     message.signatureHex = object.signatureHex ?? "";
+    return message;
+  },
+};
+
+function createBaseAuthChallenge(): AuthChallenge {
+  return { nonce: "" };
+}
+
+export const AuthChallenge: MessageFns<AuthChallenge> = {
+  encode(message: AuthChallenge, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.nonce !== "") {
+      writer.uint32(10).string(message.nonce);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): AuthChallenge {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseAuthChallenge();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.nonce = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): AuthChallenge {
+    return { nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "" };
+  },
+
+  toJSON(message: AuthChallenge): unknown {
+    const obj: any = {};
+    if (message.nonce !== "") {
+      obj.nonce = message.nonce;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<AuthChallenge>, I>>(base?: I): AuthChallenge {
+    return AuthChallenge.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<AuthChallenge>, I>>(object: I): AuthChallenge {
+    const message = createBaseAuthChallenge();
+    message.nonce = object.nonce ?? "";
     return message;
   },
 };
@@ -4541,6 +4612,7 @@ function createBaseServerMessage(): ServerMessage {
     joinRequestedEvent: undefined,
     setChatDiscoverableResponse: undefined,
     listPublicChatsResponse: undefined,
+    authChallenge: undefined,
   };
 }
 
@@ -4653,6 +4725,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.listPublicChatsResponse !== undefined) {
       ListPublicChatsResponse.encode(message.listPublicChatsResponse, writer.uint32(298).fork()).join();
+    }
+    if (message.authChallenge !== undefined) {
+      AuthChallenge.encode(message.authChallenge, writer.uint32(306).fork()).join();
     }
     return writer;
   },
@@ -4952,6 +5027,14 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.listPublicChatsResponse = ListPublicChatsResponse.decode(reader, reader.uint32());
           continue;
         }
+        case 38: {
+          if (tag !== 306) {
+            break;
+          }
+
+          message.authChallenge = AuthChallenge.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -5131,6 +5214,11 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.list_public_chats_response)
         ? ListPublicChatsResponse.fromJSON(object.list_public_chats_response)
         : undefined,
+      authChallenge: isSet(object.authChallenge)
+        ? AuthChallenge.fromJSON(object.authChallenge)
+        : isSet(object.auth_challenge)
+        ? AuthChallenge.fromJSON(object.auth_challenge)
+        : undefined,
     };
   },
 
@@ -5245,6 +5333,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.listPublicChatsResponse !== undefined) {
       obj.listPublicChatsResponse = ListPublicChatsResponse.toJSON(message.listPublicChatsResponse);
+    }
+    if (message.authChallenge !== undefined) {
+      obj.authChallenge = AuthChallenge.toJSON(message.authChallenge);
     }
     return obj;
   },
@@ -5376,6 +5467,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       (object.listPublicChatsResponse !== undefined && object.listPublicChatsResponse !== null)
         ? ListPublicChatsResponse.fromPartial(object.listPublicChatsResponse)
         : undefined;
+    message.authChallenge = (object.authChallenge !== undefined && object.authChallenge !== null)
+      ? AuthChallenge.fromPartial(object.authChallenge)
+      : undefined;
     return message;
   },
 };

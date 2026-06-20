@@ -113,6 +113,13 @@ export class EvergramCore extends EventEmitter {
       this.authenticate()
         .then(() => {
           this.authenticated = true;
+          // Mirrors webapp/app/lib/evergram-client.ts, which does the same
+          // right after auth (see its ensureAuthSessionReady/syncChats call
+          // before onSessionFullyReady()). Without this, a fresh process —
+          // or even a reconnect — has an empty `chats`/`symKeys` map and
+          // silently swallows envelopes for any chat that existed before
+          // this connection, since nothing else ever re-populates them.
+          this.syncChats();
           this.emit("authenticated");
         })
         .catch((err) => this.emit("error", err));
@@ -169,7 +176,8 @@ export class EvergramCore extends EventEmitter {
   // gateway. Register once and retry rather than making every bot author
   // special-case this on first run.
   private async authenticate(): Promise<void> {
-    const proof = signAuthChallenge(this.wallet, this.device.deviceId);
+    const challenge = await this.waitForMessage("authChallenge");
+    const proof = signAuthChallenge(this.wallet, this.device.deviceId, challenge.nonce);
 
     const msg = ClientMessage.create({
       auth: {
@@ -342,8 +350,11 @@ export class EvergramCore extends EventEmitter {
 
   // ===================== internal wire plumbing =====================
 
-  private request<K extends keyof ServerMessage>(
-    msg: ClientMessage,
+  // Registers a one-shot waiter for the next ServerMessage carrying
+  // `expectedField`, without sending anything — used both by request() (which
+  // sends a message first) and by anything waiting on an unsolicited push,
+  // like the gateway's AuthChallenge sent right after connect.
+  private waitForMessage<K extends keyof ServerMessage>(
     expectedField: K,
     timeoutMs = this.requestTimeoutMs
   ): Promise<NonNullable<ServerMessage[K]>> {
@@ -360,16 +371,24 @@ export class EvergramCore extends EventEmitter {
       };
 
       this.pendingRequests.push(entry);
-      this.transport.send(msg);
     });
+  }
+
+  private request<K extends keyof ServerMessage>(
+    msg: ClientMessage,
+    expectedField: K,
+    timeoutMs = this.requestTimeoutMs
+  ): Promise<NonNullable<ServerMessage[K]>> {
+    const pending = this.waitForMessage(expectedField, timeoutMs);
+    this.transport.send(msg);
+    return pending;
   }
 
   // Wraps request() with a single automatic re-auth-and-retry: the gateway
   // session JWT is valid for 24h (see issueGatewaySessionJwt), and a
-  // reconnect always invalidates the prior session. Rather than make every
-  // bot author handle NOT_AUTHENTICATED/invalid_authorization by hand, retry
-  // once after a fresh authenticate() — see plan's "edge case — expiração
-  // de sessão".
+  // long-lived bot connection can outlive that without ever disconnecting.
+  // Rather than make every bot author handle NOT_AUTHENTICATED/
+  // invalid_authorization by hand, retry once via a fresh connection.
   private async requestWithReauth<K extends keyof ServerMessage>(
     msg: ClientMessage,
     expectedField: K,
@@ -379,11 +398,23 @@ export class EvergramCore extends EventEmitter {
       return await this.request(msg, expectedField, timeoutMs);
     } catch (err) {
       if (err instanceof EvergramAuthError) {
-        await this.authenticate();
+        await this.reconnectAndAuthenticate();
         return this.request(msg, expectedField, timeoutMs);
       }
       throw err;
     }
+  }
+
+  // Can't just re-run authenticate() on the same connection: the gateway
+  // pushes its AuthChallenge nonce exactly once, at connection-open (see
+  // gateway/index.ts's wss.on("connection", ...)), and never re-validates a
+  // connection it has already accepted (handleAuthIfNeeded short-circuits on
+  // __sessionAccepted). A second authenticate() on the same socket would
+  // wait forever for a nonce that's never coming. A fresh connection always
+  // gets a fresh nonce, so that's the only way to actually re-authenticate.
+  private async reconnectAndAuthenticate(): Promise<void> {
+    this.transport.close();
+    await this.connect();
   }
 
   private handleServerMessage(msg: ServerMessage): void {

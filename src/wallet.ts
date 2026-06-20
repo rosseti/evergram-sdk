@@ -24,20 +24,23 @@ export function walletFromSeed(seed: string): EvergramWallet {
 }
 
 // Must match webapp/app/gateway/helpers/verify-signed-message.ts's
-// buildAuthChallenge() exactly — same string, same minute-bucketed
-// timestamp — or every signature this produces will be rejected as
-// invalid_signed_message_signature.
-export function buildAuthChallenge(address: string, deviceId: string, unixMinuteTimestamp: number): string {
-  return `evergram-auth:${address}:${deviceId}:${unixMinuteTimestamp}`;
+// buildAuthChallenge() exactly — same string — or every signature this
+// produces will be rejected as invalid_signed_message_signature.
+export function buildAuthChallenge(address: string, deviceId: string, nonce: string): string {
+  return `evergram-auth:${address}:${deviceId}:${nonce}`;
 }
 
-// Signs the current-minute auth challenge for this wallet/device pair,
-// ready to drop into AuthProof.signedMessage. The gateway accepts a small
-// tolerance window around "now" (see verify-signed-message.ts) to absorb
-// clock drift, so signing the current minute is always correct.
-export function signAuthChallenge(wallet: EvergramWallet, deviceId: string): { publicKeyHex: string; signatureHex: string } {
-  const unixMinuteTimestamp = Math.floor(Date.now() / 60_000);
-  const challenge = buildAuthChallenge(wallet.address, deviceId, unixMinuteTimestamp);
+// Signs this connection's auth challenge for this wallet/device pair, ready
+// to drop into AuthProof.signedMessage. `nonce` comes from the gateway's
+// AuthChallenge push (see EvergramCore.authenticate()) — it's single-use and
+// scoped to one connection, so this must be called fresh after every
+// connect/reconnect, never cached.
+export function signAuthChallenge(
+  wallet: EvergramWallet,
+  deviceId: string,
+  nonce: string
+): { publicKeyHex: string; signatureHex: string } {
+  const challenge = buildAuthChallenge(wallet.address, deviceId, nonce);
   const challengeHex = Buffer.from(challenge, "utf8").toString("hex");
 
   return {

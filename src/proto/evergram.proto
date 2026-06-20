@@ -27,13 +27,23 @@ message AuthProof {
 
 // Direct wallet-signature proof (e.g. XRPL), used by headless/programmatic
 // clients (bots, SDK) that have no Xaman session to obtain a jwt from.
-// The gateway reconstructs the expected challenge string itself
-// ("evergram-auth:{address}:{deviceId}:{unixMinuteTimestamp}") and verifies
-// signature_hex against public_key_hex, then confirms the derived address
-// matches ChainIdentity.address.
+// The signed challenge is "evergram-auth:{address}:{deviceId}:{nonce}",
+// where nonce is the one delivered via AuthChallenge for this connection
+// (see ServerMessage.auth_challenge) — single-use, never reused across
+// connections. The gateway verifies signature_hex against public_key_hex,
+// then confirms the derived address matches ChainIdentity.address.
 message SignedMessageProof {
   string public_key_hex = 1;
   string signature_hex  = 2;
+}
+
+// Pushed by the gateway immediately on connection open, before any client
+// message — the nonce a signed_message proof must include in its challenge
+// for THIS connection. Single-use: consumed on the first auth attempt
+// (success or failure); a new connection always gets a fresh one. Ignored
+// by clients using the jwt proof path.
+message AuthChallenge {
+  string nonce = 1;
 }
 
 /* message BootstrapAuthRequest {
@@ -286,6 +296,8 @@ message ServerMessage {
 
     SetChatDiscoverableResponse set_chat_discoverable_response = 36;
     ListPublicChatsResponse     list_public_chats_response      = 37;
+
+    AuthChallenge auth_challenge = 38;
   }
 }
 

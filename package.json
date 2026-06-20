@@ -10,6 +10,9 @@
     "protoc": "protoc --plugin=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=. ./src/proto/evergram.proto --ts_proto_opt=esModuleInterop=true",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration --testTimeout=40000",
     "example:echo-bot": "tsx examples/echo-bot/index.ts",
     "example:moderation-bot": "tsx examples/moderation-bot/index.ts",
     "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts"
@@ -26,6 +29,7 @@
     "@types/ws": "^8.18.1",
     "ts-proto": "^2.8.3",
     "tsx": "^4.20.6",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.9"
   }
 }
