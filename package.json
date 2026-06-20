@@ -15,7 +15,8 @@
     "test:integration": "vitest run test/integration --testTimeout=40000",
     "example:echo-bot": "tsx examples/echo-bot/index.ts",
     "example:moderation-bot": "tsx examples/moderation-bot/index.ts",
-    "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts"
+    "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts",
+    "example:paywall-bot": "tsx examples/paywall-bot/index.ts"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.1",

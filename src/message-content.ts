@@ -3,12 +3,12 @@
  *
  * Canonical typing for what a decrypted message plaintext actually is.
  *
- * The wire format is unchanged: plain text travels as a raw string; audio
- * and payment messages travel as a JSON envelope keyed by `__ev` (legacy
- * name, kept so existing/historical messages keep parsing — see
- * parseMessageContent). This module is the single place that turns either
- * shape into a discriminated union with an explicit `type`, so nothing else
- * in the app needs to prefix-check or JSON.parse decrypted text itself.
+ * Plain text travels as a raw string; audio and payment messages travel as
+ * a JSON envelope discriminated by `type` — the same field name and values
+ * as the parsed MessageContent below, so there's no separate wire
+ * vocabulary to translate. This module is the single place that turns
+ * either shape into a discriminated union, so nothing else in the app needs
+ * to prefix-check or JSON.parse decrypted text itself.
  */
 
 export type TextContent = { type: "text"; text: string };
@@ -63,7 +63,7 @@ export function parseMessageContent(text: string | undefined | null): MessageCon
   try {
     const obj = JSON.parse(text);
 
-    if (obj.__ev === "audio_message" && typeof obj.payload === "string") {
+    if (obj.type === "audio" && typeof obj.payload === "string") {
       return {
         type: "audio",
         mimeType: obj.mimeType,
@@ -73,7 +73,7 @@ export function parseMessageContent(text: string | undefined | null): MessageCon
       };
     }
 
-    if (obj.__ev === "payment_request") {
+    if (obj.type === "payment_request") {
       return {
         type: "payment_request",
         requestId: obj.requestId,
@@ -86,7 +86,7 @@ export function parseMessageContent(text: string | undefined | null): MessageCon
       };
     }
 
-    if (obj.__ev === "payment_receipt") {
+    if (obj.type === "payment_receipt") {
       return {
         type: "payment_receipt",
         requestId: obj.requestId,

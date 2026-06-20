@@ -10,6 +10,8 @@ export type {
   PaymentReceiptContent,
 } from "./message-content";
 
+export { buildPaymentRequest, buildPaymentReceipt, buildAudioMessage } from "./message-builders";
+
 export { EvergramBot } from "./bot";
 export type { JoinRequestHandle, EvergramBotOptions } from "./bot";
 

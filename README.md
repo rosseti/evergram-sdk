@@ -57,6 +57,7 @@ Run the fuller version of this with persistence: `npm run example:echo-bot`.
 | `examples/echo-bot` | The basics: identity bootstrap, listen, reply. |
 | `examples/moderation-bot` | Group management — auto-approving join requests by rule. |
 | `examples/webhook-bridge` | Bridging Evergram messages to an external HTTP endpoint. |
+| `examples/paywall-bot` | Monetization — gating a managed group behind a one-time payment_request/payment_receipt exchange. |
 
 Run with `npm run example:<name>`. Each example persists its generated
 wallet/device to `identity.json` next to it on first run (gitignored) so
