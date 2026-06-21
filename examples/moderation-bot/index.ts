@@ -12,6 +12,13 @@ const ALLOWLIST = new Set(
   (process.env.MODERATION_ALLOWLIST || "").split(",").map((s) => s.trim()).filter(Boolean)
 );
 
+// Identity keys to auto-promote to moderator once they join via the
+// allowlist above — demonstrates updateChatRoles(). Optional: leave unset
+// and approval still works, just without the promotion step.
+const PROMOTE = new Set(
+  (process.env.MODERATION_PROMOTE || "").split(",").map((s) => s.trim()).filter(Boolean)
+);
+
 // Note: this bot needs `group:create`/admin rights on the chats it manages.
 // A freshly generated wallet starts in the contract's default "early" tier,
 // which does not have that capability — see README "Access tiers" section.
@@ -28,14 +35,31 @@ async function main() {
       console.log(`[moderation-bot] approving ${req.identity} for chat ${req.chatId}`);
       await req.approve();
       await bot.core.sendMessage(req.chatId, `Welcome, ${req.identity}!`);
+
+      if (PROMOTE.has(req.identity)) {
+        // updateChatRoles() replaces the full admins/moderators lists, not a
+        // delta — read the current ones first and append to them.
+        const roles = bot.core.getChat(req.chatId)?.meta?.roles;
+        const admins = roles?.admins ?? [];
+        const moderators = roles?.moderators ?? [];
+        await bot.core.updateChatRoles(req.chatId, {
+          admins,
+          moderators: [...moderators, req.identity],
+        });
+        console.log(`[moderation-bot] promoted ${req.identity} to moderator in chat ${req.chatId}`);
+      }
       return;
     }
 
     // req.deny() always throws — the protocol has no reject RPC today (see
     // JoinRequestHandle's doc comment in src/bot.ts). Leaving the request
     // alone keeps it pending until a human admin decides, or it's cleared
-    // some other way.
+    // some other way. reportUser() here is a one-off demo of the RPC, not a
+    // recommended policy — flagging every non-allowlisted request would spam
+    // reports for an ordinary public chat; a real bot would gate this behind
+    // a repeat-offender count instead.
     console.log(`[moderation-bot] ${req.identity} is not on the allowlist, leaving request pending`);
+    await bot.core.reportUser(req.identity, "join request denied: not on allowlist");
   });
 
   await bot.start();

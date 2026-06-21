@@ -6,11 +6,12 @@ import {
   Envelope,
   PendingChatRequest,
   PendingGroupInvite,
+  Profile,
   ServerMessage,
 } from "./proto/evergram";
 import { Transport } from "./transport";
 import { EvergramWallet, signAuthChallenge } from "./wallet";
-import { identityKey } from "./identity";
+import { identityKey, parseIdentityKey } from "./identity";
 import {
   decryptMessage,
   deriveDevicePubHex,
@@ -103,6 +104,13 @@ export class EvergramCore extends EventEmitter {
 
   private authenticated = false;
   isRestricted = false;
+  // Populated from the same authResponse connect()/authenticate() already
+  // wait on — "complete"/"missing_nickname" (see handleAuth in
+  // evergram-contract.js). Lets EvergramBot.start() skip a redundant
+  // setProfile() round trip when the desired nickname is already set,
+  // instead of unconditionally re-applying it on every start/reconnect.
+  profile?: Profile;
+  profileStatus?: string;
 
   constructor(opts: EvergramCoreOptions) {
     super();
@@ -362,6 +370,32 @@ export class EvergramCore extends EventEmitter {
     return { chatId, msgId, ts: env.ts };
   }
 
+  // Fire-and-forget, like sendMessage above — no encryption (typing state
+  // isn't message content) and no debounce/auto-clear timer: the webapp adds
+  // a 3s auto-clear because it's driven by raw keystroke events in a
+  // browser, a UI affordance rather than a protocol requirement. The gateway
+  // also rate-limits isTyping:true to 1 per 2s per identity+device and
+  // silently drops excess (see README "Rate limits") — call this at most
+  // that often if you want every call to actually reach the other side.
+  sendTyping(chatId: string, isTyping: boolean): void {
+    const chat = this.chats.get(chatId);
+    if (!chat) {
+      throw new EvergramNotFoundError("chat_not_found", `Unknown chat ${chatId}`);
+    }
+
+    const env = Envelope.create({
+      type: "TYPING",
+      device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+      chatId,
+      sender: this.selfIdentityKey,
+      participants: chat.participants,
+      ts: Date.now(),
+      typing: { isTyping },
+    });
+
+    this.transport.send(ClientMessage.create({ envelope: env }));
+  }
+
   async addParticipant(chatId: string, remoteIdentity: string) {
     const msg = ClientMessage.create({ addParticipant: { chatId, remoteIdentity } });
     return this.requestWithReauth(msg, "addParticipantResponse");
@@ -370,6 +404,44 @@ export class EvergramCore extends EventEmitter {
   async removeParticipant(chatId: string, remoteIdentity: string) {
     const msg = ClientMessage.create({ removeParticipant: { chatId, remoteIdentity } });
     return this.requestWithReauth(msg, "removeParticipantResponse");
+  }
+
+  // Rejected by the contract for one-on-one chats (leave_not_allowed) — group
+  // chats only. The contract bundles a rotateChatVersionResponse with the
+  // updated ChatInfo (participants minus this identity) alongside
+  // leaveChatResponse; handlePush()/processChatInfo() below already apply
+  // that for both the leaver and every remaining participant, so no extra
+  // local cleanup is needed here.
+  async leaveChat(chatId: string) {
+    const msg = ClientMessage.create({ leaveChat: { chatId } });
+    return this.requestWithReauth(msg, "leaveChatResponse");
+  }
+
+  async getProfile(remoteIdentity: string) {
+    const msg = ClientMessage.create({ getProfile: { remoteIdentity: parseIdentityKey(remoteIdentity) } });
+    const resp = await this.requestWithReauth(msg, "getProfileResponse");
+    return resp.profile;
+  }
+
+  async reportUser(targetIdentity: string, reason: string) {
+    const msg = ClientMessage.create({ reportUser: { targetIdentity, reason } });
+    return this.requestWithReauth(msg, "reportUserResponse");
+  }
+
+  async setChatMode(chatId: string, opts: { moderated: boolean }) {
+    const msg = ClientMessage.create({ setChatMode: { chatId, moderated: opts.moderated } });
+    return this.requestWithReauth(msg, "setChatModeResponse");
+  }
+
+  // Replaces the chat's full admin/moderator lists — not a delta. Read
+  // getChat(chatId)?.meta?.roles first if you need to add/remove just one
+  // identity. Same rotateChatVersionResponse bundling as leaveChat() above —
+  // role changes propagate to other participants with no extra code here.
+  async updateChatRoles(chatId: string, roles: { admins: string[]; moderators: string[] }) {
+    const msg = ClientMessage.create({
+      updateChatRoles: { chatId, admins: roles.admins, moderators: roles.moderators },
+    });
+    return this.requestWithReauth(msg, "updateChatRolesResponse");
   }
 
   async generateInviteLink(chatId: string, opts?: { expiresAt?: number; maxUses?: number }) {
@@ -541,6 +613,11 @@ export class EvergramCore extends EventEmitter {
   private handlePush(msg: ServerMessage): void {
     if (msg.authResponse?.access) {
       this.isRestricted = !!msg.authResponse.access.isRestricted;
+    }
+
+    if (msg.authResponse?.status?.ok) {
+      this.profile = msg.authResponse.profile;
+      this.profileStatus = msg.authResponse.profileStatus;
     }
 
     const chatCandidates: ChatInfo[] = [];

@@ -175,12 +175,18 @@ unless noted:
 |---|---|
 | `auth` (signed_message) | 10 attempts / 5 min |
 | `sendMessage` | 5 / 10 sec |
+| `sendTyping` (`isTyping: true`) | 1 / 2 sec, excess silently dropped (no error) |
 | `createChat` | 3 / hour |
 | `generateInviteLink` / `revokeInviteLink` | 5 / hour |
 | `requestJoin` | 10 / hour |
 | `resolveInvite` | 20 / min |
 | `setChatDiscoverable` | 10 / hour |
 | `listPublicChats` | 30 / min |
+
+`leaveChat`, `getProfile`, `reportUser`, `setChatMode`, and `updateChatRoles`
+have **no gateway-level rate limit today** — not an oversight being glossed
+over, just not implemented yet; noted here so the absence from this table
+isn't mistaken for "covered, not worth mentioning."
 
 Exceeding any of these surfaces as `EvergramRateLimitError`.
 
@@ -200,6 +206,75 @@ code if you need it:
 | `EvergramValidationError` | Bad input — including client-side checks (message size, participant count) that fail fast before a round-trip. |
 | `EvergramTimeoutError` | No response within the request timeout. |
 | `EvergramConnectionError` | Transport-level connect failure. |
+
+## API reference
+
+Quick lookup of the full surface — see the sections above for the *why*
+behind auth, encryption, and access tiers; this is just *what's callable*.
+
+### `EvergramCore`
+
+The 1:1 protocol mirror. Every method sends one request and resolves with
+the matching response (or rejects with a [typed error](#typed-errors)),
+except where noted as fire-and-forget.
+
+| Method | Description |
+|---|---|
+| `new EvergramCore(opts: EvergramCoreOptions)` | Constructs the client. Doesn't connect by itself — call `connect()`. |
+| `connect(): Promise<void>` | Opens the WebSocket and completes the [signed_message auth flow](#auth-flow-signed_message). Resolves once authenticated; self-heals device registration on a brand-new identity. |
+| `close(): void` | Closes the connection. Does not affect persisted identity/keys. |
+| `registerDevice()` | Registers this device for the current identity. Normally unnecessary — `connect()` does this for you on first use. |
+| `setProfile(opts: { nickname?, avatarUrl?, bio? })` | Sets this identity's profile fields. No tier/capability gate. |
+| `getProfile(remoteIdentity: string)` | Reads another identity's profile (`nickname`/`avatarUrl`/`bio`). |
+| `createChat(type: "one-on-one" \| "group", participants: string[], meta?)` | Creates a chat. `participants` must include your own identity key and at least one other; groups need the `group:create` capability ([Access tiers](#access-tiers)). |
+| `acceptChatRequest(fromIdentity: string)` | Accepts a pending one-on-one request, when the recipient has `requireChatApproval` on. |
+| `acceptGroupInvite(chatId: string)` | Joins a group you were invited to, under the same approval gate. |
+| `declineGroupInvite(chatId: string)` | Declines one invite only — does not block the inviter. |
+| `getPendingChatRequests(): PendingChatRequest[]` | Locally cached one-on-one requests awaiting your decision. |
+| `getPendingGroupInvites(): PendingGroupInvite[]` | Locally cached group invites awaiting your decision. |
+| `blockIdentity(targetIdentity: string)` | Blocks an identity; also clears any pending chat request from them. |
+| `unblockIdentity(targetIdentity: string)` | Reverses `blockIdentity`. |
+| `updatePrivacySettings(requireChatApproval: boolean)` | Toggles whether new one-on-one chats/group invites need your explicit accept. |
+| `sendMessage(chatId: string, text: string)` | Encrypts and sends a text message. |
+| `sendTyping(chatId: string, isTyping: boolean)` | Fire-and-forget typing indicator — no return value. Gateway-throttled, see [Rate limits](#rate-limits). |
+| `addParticipant(chatId: string, remoteIdentity: string)` | Adds a participant to an existing chat — also how `JoinRequestHandle.approve()` is implemented. |
+| `removeParticipant(chatId: string, remoteIdentity: string)` | Removes a participant. |
+| `leaveChat(chatId: string)` | Leaves a group chat. Rejected with `leave_not_allowed` for one-on-one chats. |
+| `updateChatRoles(chatId, roles: { admins: string[], moderators: string[] })` | Replaces a group's full admin/moderator lists (not a delta) — group chats only. |
+| `setChatMode(chatId, opts: { moderated: boolean })` | Toggles a group's moderated flag. |
+| `reportUser(targetIdentity: string, reason: string)` | Flags an identity for abuse; may affect their reputation score. |
+| `generateInviteLink(chatId, opts?: { expiresAt?, maxUses? })` | Creates a shareable invite code for a chat. Admin-only. |
+| `revokeInviteLink(chatId: string)` | Invalidates a chat's current invite code. Admin-only. |
+| `resolveInvite(inviteCode: string)` | Looks up what an invite code points to, without joining. |
+| `requestJoin(inviteCode: string)` | Requests to join via an invite code — surfaces as a `joinRequested` event to the chat's admins/moderators. |
+| `setChatDiscoverable(chatId, discoverable: boolean, category?)` | Lists/unlists a group in public discovery. Admin-only. |
+| `listPublicChats(category?: string)` | Browses discoverable public groups. |
+| `syncChats(): void` | Fire-and-forget resync of chats/keys. Normally unnecessary — `connect()` calls this for you on every connect/reconnect. |
+| `getChat(chatId: string): ChatInfo \| undefined` | Locally cached chat metadata (participants, roles, `chatVersion`, etc). |
+| `isRestricted: boolean` | Set from `reputationUpdated`/auth pushes — true if the contract has flagged this account restricted. |
+| `profile?: Profile`, `profileStatus?: string` | The profile/status last reported back by `authResponse` — `profileStatus` is `"complete"` or `"missing_nickname"`. |
+
+**Events** (`core.on(event, handler)`): `connected`, `authenticated`,
+`disconnected`, `reconnecting` (attempt number), `message`
+(`EvergramChatMessage`), `typing`, `delivery`, `chatKeyRotated` (`{chatId}`),
+`joinRequested`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
+(`ReputationUpdated`), `error`.
+
+### `EvergramBot`
+
+The ergonomic wrapper described in [Two layers](#two-layers). `bot.core`
+exposes the full `EvergramCore` surface above for anything not covered here.
+
+| Method | Description |
+|---|---|
+| `new EvergramBot(opts: EvergramBotOptions)` | Constructs the bot — same options as `EvergramCore`, plus optional `name`. |
+| `start(): Promise<void>` | Connects and authenticates; applies `name` via `setProfile` only if it differs from the nickname `authResponse` already reports. |
+| `stop(): void` | Closes the connection. |
+| `onMessage(handler): () => void` | Subscribes to incoming chat messages. Returns an unsubscribe function. |
+| `onJoinRequest(handler): () => void` | Subscribes to join requests on chats this bot administers/moderates. `req.approve()`/`req.deny()` map to `addParticipant`/a permanent throw (no reject RPC exists — see [Known protocol limitations](#known-protocol-limitations-not-sdk-bugs)). |
+| `onChatRequest(handler): () => void` | Subscribes to pending one-on-one requests (including ones already pending at connect time). `req.approve()`/`req.deny()` map to `acceptChatRequest`/`blockIdentity`. |
+| `onGroupInvite(handler): () => void` | Subscribes to pending group invites (including ones already pending at connect time). `req.approve()`/`req.deny()` map to `acceptGroupInvite`/`declineGroupInvite`. |
+| `reply(msg, text)` | Shorthand for `core.sendMessage(msg.chatId, text)`. |
 
 ## Known protocol limitations (not SDK bugs)
 
@@ -222,6 +297,15 @@ npm test                 # unit — pure logic, no network, runs anywhere
 npm run test:integration # needs the local stack up at ws://localhost:9000/api/ws (override with EVERGRAM_TEST_WS_URL)
 npm run typecheck:test   # typechecks test/ too — `typecheck` only covers src/examples
 ```
+
+`group:create` is gated behind the beta/ga/admin tiers (see
+`contract/contract/access.config.json`) — a freshly generated wallet can't
+create groups, so the `updateChatRoles`/`setChatMode`/`leaveChat` group tests
+in `chat-management.test.ts` are skipped unless `EVERGRAM_TEST_ADMIN_SEED` is
+set to a wallet seed already granted one of those tiers on your local stack.
+Prefer `admin` (no devices/chats limit) over `beta` (`devices: 3`,
+`chats: 20`) — the same wallet address gets reused across every local run of
+that test file, so a capped tier will eventually exhaust its limit.
 
 **Unit** (`test/unit/`): `wallet.ts`/`crypto.ts` against the real `xrpl`/
 `tweetnacl` libraries, `identity.ts`'s key format, the typed-error mapping

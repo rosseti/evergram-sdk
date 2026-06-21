@@ -28,6 +28,12 @@ const AUTH_CODES = new Set([
   "invalid_authorization",
   "invalid_auth_payload",
   "invalid_device",
+  // Returned by virtually every authenticated write handler in
+  // evergram-contract.js (createChat, addParticipant, generateInviteLink,
+  // setChatMode, updateChatRoles, ...) when the device id doesn't match the
+  // derived id for its public key — pre-existing gap, not specific to any
+  // one method.
+  "invalid_device_id",
   "missing_auth",
   "missing_auth_proof",
   "invalid_signed_message_proof",
@@ -47,6 +53,11 @@ const ACCESS_DENIED_CODES = new Set([
   "ACCESS_DENIED",
   "access_denied",
   "capability_not_allowed",
+  // Pre-existing gap: already returned by generateInviteLink/revokeInviteLink/
+  // setChatDiscoverable, not just the new setChatMode.
+  "not_admin",
+  // updateChatRoles: "only admins can update roles".
+  "unauthorized",
 ]);
 
 const RESTRICTED_CODES = new Set([
@@ -69,7 +80,25 @@ const VALIDATION_CODES = new Set([
   "IDENTITY_HAS_NO_DEVICES",
   "DEVICE_MISSING_PUBKEY",
   "missing_field",
+  // updateChatRoles uses the plural form for its own required-fields check —
+  // a distinct string from "missing_field" above, not a typo.
+  "missing_fields",
   "no_participants",
+  // addParticipant: the gateway's own pre-check (handlers/inbound/
+  // addParticipant.ts), not the contract — pre-existing gap, surfaced while
+  // debugging the new chat-management tests, same class as not_admin/
+  // invalid_device_id above.
+  "ALREADY_PARTICIPANT",
+  // leaveChat: one-on-one chats can't be left, group chats only.
+  "leave_not_allowed",
+  // updateChatRoles: target identity isn't a participant of this chat.
+  "invalid_participant",
+  // updateChatRoles: only group chats support role management.
+  "invalid_chat_type",
+  // updateChatRoles: a group must always keep at least one admin.
+  "last_admin_protection",
+  // updateChatRoles: the group founder can't be removed from admins.
+  "founder_protection",
 ]);
 
 // Builds the right EvergramError subclass for a gateway/contract response

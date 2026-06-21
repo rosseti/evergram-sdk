@@ -26,6 +26,19 @@ describe("errorFromCode", () => {
     ["account_restricted", EvergramRestrictedError],
     ["invalid_message_size", EvergramValidationError],
     ["totally_unknown_code", EvergramError],
+    // invalid_device_id/not_admin predate leaveChat/getProfile/reportUser/
+    // setChatMode/updateChatRoles (already returned by e.g. addParticipant/
+    // generateInviteLink) but were never mapped until those methods were added.
+    ["invalid_device_id", EvergramAuthError],
+    ["not_admin", EvergramAccessDeniedError],
+    ["unauthorized", EvergramAccessDeniedError],
+    ["leave_not_allowed", EvergramValidationError],
+    ["missing_fields", EvergramValidationError],
+    ["invalid_participant", EvergramValidationError],
+    ["invalid_chat_type", EvergramValidationError],
+    ["last_admin_protection", EvergramValidationError],
+    ["founder_protection", EvergramValidationError],
+    ["ALREADY_PARTICIPANT", EvergramValidationError],
   ])("maps %s to %s", (code, ErrorClass) => {
     const err = errorFromCode(code);
     expect(err).toBeInstanceOf(ErrorClass);

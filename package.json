@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run test/unit",
-    "test:integration": "vitest run test/integration --testTimeout=40000",
+    "test:integration": "vitest run test/integration --testTimeout=90000",
     "example:echo-bot": "tsx examples/echo-bot/index.ts",
     "example:moderation-bot": "tsx examples/moderation-bot/index.ts",
     "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts",

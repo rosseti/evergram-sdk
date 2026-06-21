@@ -38,9 +38,11 @@ export interface EvergramBotOptions extends EvergramCoreOptions {
   /**
    * Display name for this bot. If set, `start()` calls
    * `core.setProfile({ nickname: name })` right after connecting, so chat
-   * UIs show this instead of a raw address. Re-applied on every start() —
-   * harmless (setProfile has no rate limit of its own) but worth knowing if
-   * you're restarting frequently in a tight loop.
+   * UIs show this instead of a raw address. Skipped if the nickname
+   * authResponse already reported back is already `name` — setProfile is a
+   * contract write (a full consensus round trip), so re-applying an
+   * unchanged nickname on every start/reconnect would just be wasted
+   * latency on the common case of a bot restarting with the same name.
    */
   name?: string;
 }
@@ -62,7 +64,7 @@ export class EvergramBot {
   async start(): Promise<void> {
     await this.core.connect();
 
-    if (this.name) {
+    if (this.name && this.core.profile?.nickname !== this.name) {
       await this.core.setProfile({ nickname: this.name });
     }
   }
