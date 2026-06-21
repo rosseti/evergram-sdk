@@ -99,17 +99,32 @@ review before this SDK's first real use.
 
 A dedicated security review of this auth path found no authentication-bypass
 vulnerability. The one design issue it surfaced (timestamp-based challenge
-replayable across connections) has been fixed — see above. Still worth
-knowing before relying on this beyond local development:
+replayable across connections) has been fixed — see above. Two more issues
+were found and fixed in a follow-up review since:
 
-1. The gateway logs (`Logger.warn`) after 5 failed signature verifications
-   for the same claimed address within 10 minutes (`rateLimiter.ts`'s
-   `recordSignedMessageAuthFailure`) — wire this into real alerting before
-   depending on it as your only brute-force signal.
+1. `allowSignedMessageAuth`'s rate limit was keyed by `remoteIdKey:deviceId`,
+   and `deviceId` is self-asserted in the same `Auth` payload being
+   authenticated — an attacker could mint a fresh budget every attempt by
+   rotating it. Now keyed by address alone (`rateLimiter.ts`), matching how
+   the failure counter below was already keyed.
+2. The brute-force alert (`recordSignedMessageAuthFailure`) logged via
+   `Logger.warn`, which is silenced by default in production — the alert
+   never actually surfaced anywhere production logs were watched. Now
+   `Logger.error` (never silenced) plus an investigable, severity-tagged
+   Security Events panel in the `hpmgr` admin UI — no longer "just a log line."
+
+Still worth knowing before relying on this beyond local development:
+
+1. The Security Events panel is pull, not push — nobody is paged
+   automatically, an admin has to open it. A real push channel (e.g. a
+   webhook) is a deliberate follow-up, not done yet — blocked on picking a
+   destination that doesn't mean baking a long-lived secret into every
+   Evernode node's container.
 2. This is still the first fully programmatic auth path in this system
    (distinct from the existing Xaman-JWT path) — treat any further change to
-   `verify-signed-message.ts` or the `AuthChallenge` handshake as worth its
-   own focused review, not bundled into an unrelated PR.
+   `verify-signed-message.ts`, `rateLimiter.ts`, or the `AuthChallenge`
+   handshake as worth its own focused review, not bundled into an unrelated
+   PR (this review session itself touched all three).
 
 ## Device keys & backup
 
