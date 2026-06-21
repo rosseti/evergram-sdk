@@ -79,6 +79,16 @@ export function generateDeviceKeypair(): { pubHex: string; privHex: string } {
   };
 }
 
+// Derives the X25519 public key matching a device private key — used to
+// catch a corrupted/mismatched devicePrivHex (e.g. truncated or bit-flipped
+// wherever the caller persisted it) at construction time, before it
+// silently breaks every chat key derivation later. Throws (via tweetnacl's
+// own length check) if the hex doesn't decode to a 32-byte key.
+export function deriveDevicePubHex(devicePrivHex: string): string {
+  const keyPair = nacl.box.keyPair.fromSecretKey(hexToBytes(devicePrivHex));
+  return bytesToHex(keyPair.publicKey);
+}
+
 // Mirrors webapp/app/lib/device-storage.ts's deriveDeviceId exactly — the
 // device_id sent in every message must match sha256(devicePubHex) truncated
 // to 32 hex chars, or the gateway/contract reject it as invalid_device.

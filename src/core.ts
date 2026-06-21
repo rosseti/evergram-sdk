@@ -13,6 +13,7 @@ import { EvergramWallet, signAuthChallenge } from "./wallet";
 import { identityKey } from "./identity";
 import {
   decryptMessage,
+  deriveDevicePubHex,
   encryptMessage,
   generateMsgId,
   openSealedSymKey,
@@ -108,6 +109,7 @@ export class EvergramCore extends EventEmitter {
 
     this.wallet = opts.wallet;
     this.device = opts.device;
+    this.assertDeviceKeypairValid(opts.device);
     this.identity.address = opts.wallet.address;
     this.selfIdentityKey = identityKey(this.identity as any);
     this.maxParticipants = opts.maxParticipants ?? 100;
@@ -589,6 +591,32 @@ export class EvergramCore extends EventEmitter {
     }
   }
 
+  // Catches a corrupted/mismatched devicePrivHex (truncated, bit-flipped,
+  // wrong file loaded — anything that can happen wherever the caller
+  // persists and reloads it) right at construction, loud and synchronous.
+  // Without this, the bot connects and authenticates fine (auth uses the
+  // wallet key, not the device key) and only fails silently, deep inside
+  // processChatInfo below, the first time it tries to open a chat key.
+  private assertDeviceKeypairValid(device: EvergramDevice): void {
+    let derivedPubHex: string;
+    try {
+      derivedPubHex = deriveDevicePubHex(device.devicePrivHex);
+    } catch {
+      throw new EvergramValidationError(
+        "invalid_device_private_key",
+        "device.devicePrivHex is not a valid X25519 private key (wrong length/format) — check wherever it's persisted/reloaded for truncation or corruption"
+      );
+    }
+
+    const normalizedPubHex = device.devicePubHex.toLowerCase().replace(/^0x/, "");
+    if (derivedPubHex !== normalizedPubHex) {
+      throw new EvergramValidationError(
+        "device_key_mismatch",
+        "device.devicePrivHex does not match device.devicePubHex — this device will never be able to decrypt any chat key; check wherever this keypair is persisted/reloaded for corruption"
+      );
+    }
+  }
+
   // Mirrors EvergramProvider.tsx's processChat(): derive this device's
   // symmetric key from the sealed envelope the gateway produced, cache the
   // chat, and drain any messages that arrived before the key was known.
@@ -604,7 +632,18 @@ export class EvergramCore extends EventEmitter {
       { ciphertext: sealed.ciphertext, nonce: sealed.nonce, ephemeralPubkey: sealed.ephemeralPubkey },
       this.device.devicePrivHex
     );
-    if (!opened) return;
+    if (!opened) {
+      // assertDeviceKeypairValid already rules out a mismatched device key —
+      // reaching here means this specific chat's sealed envelope itself is
+      // bad. Rare, but silently dropping it left messages queued forever in
+      // pendingEnvelopes with zero signal (see README's "Caught two real
+      // bugs" #2 for the same failure shape with a different root cause).
+      this.emit("error", new EvergramValidationError(
+        "chat_key_unsealable",
+        `failed to open chat ${chat.chatId}'s symmetric key with this device's private key — its messages will queue forever until this is resolved`
+      ));
+      return;
+    }
 
     const isRotation = this.symKeys.has(chat.chatId);
     this.symKeys.set(chat.chatId, opened);
