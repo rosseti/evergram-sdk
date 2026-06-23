@@ -20,6 +20,9 @@ async function main() {
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device });
   bot.core.on("error", (err) => console.error("[webhook-bridge] error:", err));
+  bot.core.on("disconnected", () => console.warn("[webhook-bridge] disconnected from gateway"));
+  bot.core.on("reconnecting", (attempt) => console.warn(`[webhook-bridge] reconnecting (attempt ${attempt})`));
+  bot.core.on("authenticated", () => console.log("[webhook-bridge] (re)authenticated"));
 
   bot.onMessage(async (msg, chat) => {
     if (!msg.text) return;

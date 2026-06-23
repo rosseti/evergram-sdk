@@ -44,6 +44,9 @@ async function main() {
   const selfIdentityKey = identityKey({ chainFamily: ChainFamily.XRPL, address: wallet.address });
 
   bot.core.on("error", (err) => console.error("[paywall-bot] error:", err));
+  bot.core.on("disconnected", () => console.warn("[paywall-bot] disconnected from gateway"));
+  bot.core.on("reconnecting", (attempt) => console.warn(`[paywall-bot] reconnecting (attempt ${attempt})`));
+  bot.core.on("authenticated", () => console.log("[paywall-bot] (re)authenticated"));
 
   const verified = new Set<string>(); // identity keys who've paid
   const pendingRequests = new Map<string, string>(); // identity key -> outstanding requestId

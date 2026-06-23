@@ -29,6 +29,9 @@ async function main() {
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device });
   bot.core.on("error", (err) => console.error("[moderation-bot] error:", err));
+  bot.core.on("disconnected", () => console.warn("[moderation-bot] disconnected from gateway"));
+  bot.core.on("reconnecting", (attempt) => console.warn(`[moderation-bot] reconnecting (attempt ${attempt})`));
+  bot.core.on("authenticated", () => console.log("[moderation-bot] (re)authenticated"));
 
   bot.onJoinRequest(async (req) => {
     if (ALLOWLIST.has(req.identity)) {
