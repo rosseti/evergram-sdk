@@ -409,6 +409,8 @@ export interface SendContent {
   msgId: string;
   ciphertext: string;
   nonce: string;
+  /** plaintext ref to the message being replied to, like ReactContent/EditContent.msg_id; empty = not a reply */
+  replyToMsgId: string;
 }
 
 export interface TypingContent {
@@ -6956,7 +6958,7 @@ export const Envelope: MessageFns<Envelope> = {
 };
 
 function createBaseSendContent(): SendContent {
-  return { msgId: "", ciphertext: "", nonce: "" };
+  return { msgId: "", ciphertext: "", nonce: "", replyToMsgId: "" };
 }
 
 export const SendContent: MessageFns<SendContent> = {
@@ -6969,6 +6971,9 @@ export const SendContent: MessageFns<SendContent> = {
     }
     if (message.nonce !== "") {
       writer.uint32(26).string(message.nonce);
+    }
+    if (message.replyToMsgId !== "") {
+      writer.uint32(34).string(message.replyToMsgId);
     }
     return writer;
   },
@@ -7004,6 +7009,14 @@ export const SendContent: MessageFns<SendContent> = {
           message.nonce = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.replyToMsgId = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -7022,6 +7035,11 @@ export const SendContent: MessageFns<SendContent> = {
         : "",
       ciphertext: isSet(object.ciphertext) ? globalThis.String(object.ciphertext) : "",
       nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "",
+      replyToMsgId: isSet(object.replyToMsgId)
+        ? globalThis.String(object.replyToMsgId)
+        : isSet(object.reply_to_msg_id)
+        ? globalThis.String(object.reply_to_msg_id)
+        : "",
     };
   },
 
@@ -7036,6 +7054,9 @@ export const SendContent: MessageFns<SendContent> = {
     if (message.nonce !== "") {
       obj.nonce = message.nonce;
     }
+    if (message.replyToMsgId !== "") {
+      obj.replyToMsgId = message.replyToMsgId;
+    }
     return obj;
   },
 
@@ -7047,6 +7068,7 @@ export const SendContent: MessageFns<SendContent> = {
     message.msgId = object.msgId ?? "";
     message.ciphertext = object.ciphertext ?? "";
     message.nonce = object.nonce ?? "";
+    message.replyToMsgId = object.replyToMsgId ?? "";
     return message;
   },
 };

@@ -366,9 +366,10 @@ message Envelope {
 }
 
 message SendContent {
-  string msg_id     = 1;
-  string ciphertext = 2;
-  string nonce      = 3;
+  string msg_id          = 1;
+  string ciphertext      = 2;
+  string nonce           = 3;
+  string reply_to_msg_id = 4; // plaintext ref to the message being replied to, like ReactContent/EditContent.msg_id; empty = not a reply
 }
 
 message TypingContent {

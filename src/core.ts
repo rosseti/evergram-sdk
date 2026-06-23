@@ -28,6 +28,15 @@ import {
 } from "./errors";
 import { MessageContent, parseMessageContent } from "./message-content";
 
+// Bounds pendingEnvelopes (see deliverOrQueue) for a chat whose symmetric key
+// never resolves — e.g. chat_key_unsealable below, or any other case where
+// processChatInfo never runs for it. Without a cap this is an unbounded
+// per-chat queue for the life of the process, which matters here precisely
+// because this SDK targets long-running bot processes. Generous enough that
+// it never trips during the normal brief race this queue exists for
+// (envelope arrives just before the chat's key push).
+const MAX_PENDING_ENVELOPES_PER_CHAT = 500;
+
 export interface EvergramDevice {
   deviceId: string;
   devicePubHex: string;
@@ -360,7 +369,7 @@ export class EvergramCore extends EventEmitter {
     return Array.from(this.pendingGroupInvites.values());
   }
 
-  async sendMessage(chatId: string, text: string) {
+  async sendMessage(chatId: string, text: string, opts?: { replyToMsgId?: string }) {
     if (this.maxMessageSize !== undefined) {
       const byteLength = Buffer.byteLength(text, "utf8");
       if (byteLength > this.maxMessageSize) {
@@ -391,7 +400,7 @@ export class EvergramCore extends EventEmitter {
       sender: this.selfIdentityKey,
       participants: chat.participants,
       ts: Date.now(),
-      send: { msgId, ciphertext: encrypted.ciphertext, nonce: encrypted.nonce },
+      send: { msgId, ciphertext: encrypted.ciphertext, nonce: encrypted.nonce, replyToMsgId: opts?.replyToMsgId || "" },
     });
 
     this.transport.send(ClientMessage.create({ envelope: env }));
@@ -906,6 +915,15 @@ export class EvergramCore extends EventEmitter {
     if (!symKey) {
       const queue = this.pendingEnvelopes.get(env.chatId) ?? [];
       queue.push(env);
+
+      if (queue.length > MAX_PENDING_ENVELOPES_PER_CHAT) {
+        queue.shift();
+        this.emit("error", new EvergramValidationError(
+          "pending_envelope_queue_overflow",
+          `chat ${env.chatId}'s key never resolved after ${MAX_PENDING_ENVELOPES_PER_CHAT} queued envelopes — dropping the oldest. Check chatKeyRotated/error events for this chat.`
+        ));
+      }
+
       this.pendingEnvelopes.set(env.chatId, queue);
       return;
     }
