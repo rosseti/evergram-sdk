@@ -348,7 +348,7 @@ message RotateChatVersionResponse {
 }
 
 message Envelope {
-  string          type         = 1; // "SEND", "ACK", "TYPING", "DELIVERY"
+  string          type         = 1; // "SEND", "ACK", "TYPING", "DELIVERY", "REACT", "EDIT"
   Device          device       = 2;
   string          chat_id      = 3;
   string          sender       = 4; // sender identity key
@@ -360,6 +360,8 @@ message Envelope {
     TypingContent         typing   = 8;
     AckContent            ack      = 9;
     DeliveryStatusContent delivery = 10;
+    ReactContent          react    = 11;
+    EditContent           edit     = 12;
   }
 }
 
@@ -374,14 +376,39 @@ message TypingContent {
 }
 
 message AckContent {
-  string event_type     = 1; // SEND, TYPING, DELIVERY
+  string event_type     = 1; // SEND, TYPING, DELIVERY, REACT, EDIT
   string related_msg_id = 2;
 }
 
 message DeliveryStatusContent {
-  string         msg_id = 1;
-  ResponseStatus status = 2;
-  int64          ts     = 3;
+  string         msg_id     = 1;
+  ResponseStatus status     = 2;
+  int64          ts         = 3;
+  // "SEND" (default/empty = legacy SEND), "REACT", "EDIT" — lets the client
+  // tell "the original message failed to send" apart from "a later
+  // react/edit/delete attempt on it was rejected", which need very
+  // different UI handling (the former marks the message failed; the
+  // latter must NOT touch the original message's delivery status at all).
+  string         event_type = 4;
+}
+
+message ReactContent {
+  string msg_id     = 1; // target message being reacted to (plaintext ref, like AckContent.related_msg_id)
+  string ciphertext = 2; // encrypted emoji (same encryptMessage/decryptMessage as SendContent)
+  string nonce      = 3;
+  bool   removed    = 4; // true = remove my reaction from this message
+}
+
+// Covers both "edit" and "delete for everyone" — delete is just an edit with
+// removed=true and an empty/ignored ciphertext. Reuses the same transport,
+// authorization (recentSends ownership+window check) and fan-out as edit;
+// only the client-side rendering differs (tombstone vs. new text).
+message EditContent {
+  string msg_id     = 1; // target message being edited or removed
+  string ciphertext = 2; // new encrypted body; ignored when removed=true
+  string nonce      = 3;
+  int64  edited_at  = 4;
+  bool   removed    = 5; // true = "delete for everyone" tombstone
 }
 
 message Device {

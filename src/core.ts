@@ -76,6 +76,33 @@ export interface EvergramChatMessage {
   content: MessageContent;
 }
 
+export interface EvergramReaction {
+  chatId: string;
+  sender: string;
+  msgId: string;
+  /** The decrypted emoji, or null when removed (or undecryptable). */
+  emoji: string | null;
+  removed: boolean;
+  ts: number;
+}
+
+export interface EvergramMessageEdited {
+  chatId: string;
+  sender: string;
+  msgId: string;
+  text: string | null;
+  /** Typed view of `text`, same as EvergramChatMessage.content. */
+  content: MessageContent;
+  editedAt: number;
+}
+
+export interface EvergramMessageDeleted {
+  chatId: string;
+  sender: string;
+  msgId: string;
+  removedAt: number;
+}
+
 // Low-level, faithful mirror of the wire protocol — see webapp/app/lib/evergram-client.ts
 // for the browser equivalent this is modeled on. EvergramBot (bot.ts) wraps
 // this with an ergonomic API; use Core directly when you need control over
@@ -83,8 +110,10 @@ export interface EvergramChatMessage {
 //
 // Events: "connected", "authenticated", "disconnected", "reconnecting" (attempt),
 // "message" (EvergramChatMessage), "typing", "delivery", "chatKeyRotated" ({chatId}),
-// "joinRequested" (JoinRequestedEvent), "chatRequestReceived" (PendingChatRequest),
-// "groupInviteReceived" (PendingGroupInvite), "restricted" (ReputationUpdated), "error" (Error).
+// "reaction" (EvergramReaction), "messageEdited" (EvergramMessageEdited),
+// "messageDeleted" (EvergramMessageDeleted), "joinRequested" (JoinRequestedEvent),
+// "chatRequestReceived" (PendingChatRequest), "groupInviteReceived" (PendingGroupInvite),
+// "restricted" (ReputationUpdated), "error" (Error).
 export class EvergramCore extends EventEmitter {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
@@ -396,6 +425,103 @@ export class EvergramCore extends EventEmitter {
     this.transport.send(ClientMessage.create({ envelope: env }));
   }
 
+  async reactToMessage(chatId: string, msgId: string, emoji: string) {
+    const symKey = this.getSymKeyOrThrow(chatId);
+    const chat = this.getChatOrThrow(chatId);
+    const encrypted = encryptMessage(symKey, emoji);
+
+    const env = Envelope.create({
+      type: "REACT",
+      device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+      chatId,
+      sender: this.selfIdentityKey,
+      participants: chat.participants,
+      ts: Date.now(),
+      react: { msgId, ciphertext: encrypted.ciphertext, nonce: encrypted.nonce, removed: false },
+    });
+
+    this.transport.send(ClientMessage.create({ envelope: env }));
+
+    return { chatId, msgId, ts: env.ts };
+  }
+
+  async removeReaction(chatId: string, msgId: string) {
+    const chat = this.getChatOrThrow(chatId);
+
+    const env = Envelope.create({
+      type: "REACT",
+      device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+      chatId,
+      sender: this.selfIdentityKey,
+      participants: chat.participants,
+      ts: Date.now(),
+      react: { msgId, ciphertext: "", nonce: "", removed: true },
+    });
+
+    this.transport.send(ClientMessage.create({ envelope: env }));
+
+    return { chatId, msgId, ts: env.ts };
+  }
+
+  // Only text messages may be edited — the gateway enforces the 15-minute
+  // edit window (see webapp/app/gateway/ws/recentSends.ts) but has no way
+  // to know the original message's content type, since it never decrypts
+  // anything. Restricting this client-side prevents e.g. silently rewriting
+  // a payment_request's amount after the fact; recipients independently
+  // re-check the original content type before applying an incoming edit.
+  async editMessage(chatId: string, msgId: string, newText: string) {
+    if (this.maxMessageSize !== undefined) {
+      const byteLength = Buffer.byteLength(newText, "utf8");
+      if (byteLength > this.maxMessageSize) {
+        throw new EvergramValidationError(
+          "message_too_large",
+          `Message is ${byteLength} bytes, exceeding the configured limit of ${this.maxMessageSize}`
+        );
+      }
+    }
+
+    const symKey = this.getSymKeyOrThrow(chatId);
+    const chat = this.getChatOrThrow(chatId);
+    const encrypted = encryptMessage(symKey, newText);
+
+    const env = Envelope.create({
+      type: "EDIT",
+      device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+      chatId,
+      sender: this.selfIdentityKey,
+      participants: chat.participants,
+      ts: Date.now(),
+      edit: { msgId, ciphertext: encrypted.ciphertext, nonce: encrypted.nonce, editedAt: Date.now(), removed: false },
+    });
+
+    this.transport.send(ClientMessage.create({ envelope: env }));
+
+    return { chatId, msgId, ts: env.ts };
+  }
+
+  // "Delete for everyone" — same wire envelope as editMessage, with
+  // removed=true and no ciphertext. Subject to the same 15-minute window;
+  // after it expires, only a local-only "delete for me" makes sense, which
+  // is purely client-side state and out of scope for this SDK (it never
+  // persists chat history for you in the first place).
+  async deleteMessage(chatId: string, msgId: string) {
+    const chat = this.getChatOrThrow(chatId);
+
+    const env = Envelope.create({
+      type: "EDIT",
+      device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+      chatId,
+      sender: this.selfIdentityKey,
+      participants: chat.participants,
+      ts: Date.now(),
+      edit: { msgId, ciphertext: "", nonce: "", editedAt: Date.now(), removed: true },
+    });
+
+    this.transport.send(ClientMessage.create({ envelope: env }));
+
+    return { chatId, msgId, ts: env.ts };
+  }
+
   async addParticipant(chatId: string, remoteIdentity: string) {
     const msg = ClientMessage.create({ addParticipant: { chatId, remoteIdentity } });
     return this.requestWithReauth(msg, "addParticipantResponse");
@@ -495,6 +621,22 @@ export class EvergramCore extends EventEmitter {
   }
 
   // ===================== internal wire plumbing =====================
+
+  private getChatOrThrow(chatId: string): ChatInfo {
+    const chat = this.chats.get(chatId);
+    if (!chat) {
+      throw new EvergramNotFoundError("chat_not_found", `Unknown chat ${chatId}`);
+    }
+    return chat;
+  }
+
+  private getSymKeyOrThrow(chatId: string): Uint8Array {
+    const symKey = this.symKeys.get(chatId);
+    if (!symKey) {
+      throw new EvergramNotFoundError("chat_key_unknown", `No symmetric key known for chat ${chatId} yet — call syncChats() or wait for the chat to be established`);
+    }
+    return symKey;
+  }
 
   // Registers a one-shot waiter for the next ServerMessage carrying
   // `expectedField`, without sending anything — used both by request() (which
@@ -733,10 +875,25 @@ export class EvergramCore extends EventEmitter {
   private handleEnvelope(env: Envelope): void {
     if (env.type === "SEND" && env.send) {
       this.deliverOrQueue(env);
+    } else if (env.type === "REACT" && env.react) {
+      this.deliverOrQueue(env);
+    } else if (env.type === "EDIT" && env.edit) {
+      this.deliverOrQueue(env);
     } else if (env.type === "TYPING") {
       this.emit("typing", { chatId: env.chatId, sender: env.sender, isTyping: !!env.typing?.isTyping });
     } else if (env.type === "DELIVERY" && env.delivery) {
-      this.emit("delivery", { chatId: env.chatId, msgId: env.delivery.msgId, status: env.delivery.status });
+      // eventType ("SEND"/"REACT"/"EDIT") lets a bot author tell "my
+      // original message failed to send" apart from "a later react/edit/
+      // delete attempt on it was rejected" — reactToMessage()/editMessage()/
+      // deleteMessage() are fire-and-forget like sendMessage(), so this
+      // "delivery" event (not the returned Promise) is the only place that
+      // outcome is observable.
+      this.emit("delivery", {
+        chatId: env.chatId,
+        msgId: env.delivery.msgId,
+        status: env.delivery.status,
+        eventType: env.delivery.eventType || "SEND",
+      });
     }
   }
 
@@ -766,17 +923,58 @@ export class EvergramCore extends EventEmitter {
   }
 
   private decryptAndEmit(env: Envelope, symKey: Uint8Array): void {
-    const text = decryptMessage(symKey, env.send!.nonce, env.send!.ciphertext);
+    if (env.send) {
+      const text = decryptMessage(symKey, env.send.nonce, env.send.ciphertext);
 
-    const message: EvergramChatMessage = {
-      chatId: env.chatId,
-      sender: env.sender,
-      msgId: env.send!.msgId,
-      ts: env.ts,
-      text,
-      content: parseMessageContent(text),
-    };
+      const message: EvergramChatMessage = {
+        chatId: env.chatId,
+        sender: env.sender,
+        msgId: env.send.msgId,
+        ts: env.ts,
+        text,
+        content: parseMessageContent(text),
+      };
 
-    this.emit("message", message);
+      this.emit("message", message);
+    } else if (env.react) {
+      const emoji = env.react.removed
+        ? null
+        : decryptMessage(symKey, env.react.nonce, env.react.ciphertext);
+
+      const reaction: EvergramReaction = {
+        chatId: env.chatId,
+        sender: env.sender,
+        msgId: env.react.msgId,
+        emoji,
+        removed: !!env.react.removed,
+        ts: env.ts,
+      };
+
+      this.emit("reaction", reaction);
+    } else if (env.edit) {
+      if (env.edit.removed) {
+        const deleted: EvergramMessageDeleted = {
+          chatId: env.chatId,
+          sender: env.sender,
+          msgId: env.edit.msgId,
+          removedAt: env.edit.editedAt || env.ts,
+        };
+
+        this.emit("messageDeleted", deleted);
+      } else {
+        const text = decryptMessage(symKey, env.edit.nonce, env.edit.ciphertext);
+
+        const edited: EvergramMessageEdited = {
+          chatId: env.chatId,
+          sender: env.sender,
+          msgId: env.edit.msgId,
+          text,
+          content: parseMessageContent(text),
+          editedAt: env.edit.editedAt || env.ts,
+        };
+
+        this.emit("messageEdited", edited);
+      }
+    }
   }
 }

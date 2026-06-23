@@ -1,4 +1,11 @@
-import { EvergramChatMessage, EvergramCore, EvergramCoreOptions } from "./core";
+import {
+  EvergramChatMessage,
+  EvergramCore,
+  EvergramCoreOptions,
+  EvergramMessageDeleted,
+  EvergramMessageEdited,
+  EvergramReaction,
+} from "./core";
 import { ChatInfo, JoinRequestedEvent, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
 import { EvergramError } from "./errors";
 
@@ -30,6 +37,9 @@ export interface GroupInviteHandle extends PendingGroupInvite {
 }
 
 type MessageHandler = (msg: EvergramChatMessage, chat: ChatInfo | undefined) => void | Promise<void>;
+type ReactionHandler = (reaction: EvergramReaction, chat: ChatInfo | undefined) => void | Promise<void>;
+type MessageEditedHandler = (edit: EvergramMessageEdited, chat: ChatInfo | undefined) => void | Promise<void>;
+type MessageDeletedHandler = (deletion: EvergramMessageDeleted, chat: ChatInfo | undefined) => void | Promise<void>;
 type JoinRequestHandler = (req: JoinRequestHandle) => void | Promise<void>;
 type ChatRequestHandler = (req: ChatRequestHandle) => void | Promise<void>;
 type GroupInviteHandler = (req: GroupInviteHandle) => void | Promise<void>;
@@ -81,6 +91,36 @@ export class EvergramBot {
     };
     this.core.on("message", wrapped);
     return () => this.core.off("message", wrapped);
+  }
+
+  onReaction(handler: ReactionHandler): () => void {
+    const wrapped = (reaction: EvergramReaction) => {
+      Promise.resolve(handler(reaction, this.core.getChat(reaction.chatId))).catch((err) =>
+        this.core.emit("error", err)
+      );
+    };
+    this.core.on("reaction", wrapped);
+    return () => this.core.off("reaction", wrapped);
+  }
+
+  onMessageEdited(handler: MessageEditedHandler): () => void {
+    const wrapped = (edit: EvergramMessageEdited) => {
+      Promise.resolve(handler(edit, this.core.getChat(edit.chatId))).catch((err) =>
+        this.core.emit("error", err)
+      );
+    };
+    this.core.on("messageEdited", wrapped);
+    return () => this.core.off("messageEdited", wrapped);
+  }
+
+  onMessageDeleted(handler: MessageDeletedHandler): () => void {
+    const wrapped = (deletion: EvergramMessageDeleted) => {
+      Promise.resolve(handler(deletion, this.core.getChat(deletion.chatId))).catch((err) =>
+        this.core.emit("error", err)
+      );
+    };
+    this.core.on("messageDeleted", wrapped);
+    return () => this.core.off("messageDeleted", wrapped);
   }
 
   onJoinRequest(handler: JoinRequestHandler): () => void {

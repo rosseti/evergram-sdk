@@ -389,7 +389,7 @@ export interface RotateChatVersionResponse {
 }
 
 export interface Envelope {
-  /** "SEND", "ACK", "TYPING", "DELIVERY" */
+  /** "SEND", "ACK", "TYPING", "DELIVERY", "REACT", "EDIT" */
   type: string;
   device: Device | undefined;
   chatId: string;
@@ -401,6 +401,8 @@ export interface Envelope {
   typing?: TypingContent | undefined;
   ack?: AckContent | undefined;
   delivery?: DeliveryStatusContent | undefined;
+  react?: ReactContent | undefined;
+  edit?: EditContent | undefined;
 }
 
 export interface SendContent {
@@ -414,7 +416,7 @@ export interface TypingContent {
 }
 
 export interface AckContent {
-  /** SEND, TYPING, DELIVERY */
+  /** SEND, TYPING, DELIVERY, REACT, EDIT */
   eventType: string;
   relatedMsgId: string;
 }
@@ -423,6 +425,41 @@ export interface DeliveryStatusContent {
   msgId: string;
   status: ResponseStatus | undefined;
   ts: number;
+  /**
+   * "SEND" (default/empty = legacy SEND), "REACT", "EDIT" — lets the client
+   * tell "the original message failed to send" apart from "a later
+   * react/edit/delete attempt on it was rejected", which need very
+   * different UI handling (the former marks the message failed; the
+   * latter must NOT touch the original message's delivery status at all).
+   */
+  eventType: string;
+}
+
+export interface ReactContent {
+  /** target message being reacted to (plaintext ref, like AckContent.related_msg_id) */
+  msgId: string;
+  /** encrypted emoji (same encryptMessage/decryptMessage as SendContent) */
+  ciphertext: string;
+  nonce: string;
+  /** true = remove my reaction from this message */
+  removed: boolean;
+}
+
+/**
+ * Covers both "edit" and "delete for everyone" — delete is just an edit with
+ * removed=true and an empty/ignored ciphertext. Reuses the same transport,
+ * authorization (recentSends ownership+window check) and fan-out as edit;
+ * only the client-side rendering differs (tombstone vs. new text).
+ */
+export interface EditContent {
+  /** target message being edited or removed */
+  msgId: string;
+  /** new encrypted body; ignored when removed=true */
+  ciphertext: string;
+  nonce: string;
+  editedAt: number;
+  /** true = "delete for everyone" tombstone */
+  removed: boolean;
 }
 
 export interface Device {
@@ -6663,6 +6700,8 @@ function createBaseEnvelope(): Envelope {
     typing: undefined,
     ack: undefined,
     delivery: undefined,
+    react: undefined,
+    edit: undefined,
   };
 }
 
@@ -6697,6 +6736,12 @@ export const Envelope: MessageFns<Envelope> = {
     }
     if (message.delivery !== undefined) {
       DeliveryStatusContent.encode(message.delivery, writer.uint32(82).fork()).join();
+    }
+    if (message.react !== undefined) {
+      ReactContent.encode(message.react, writer.uint32(90).fork()).join();
+    }
+    if (message.edit !== undefined) {
+      EditContent.encode(message.edit, writer.uint32(98).fork()).join();
     }
     return writer;
   },
@@ -6788,6 +6833,22 @@ export const Envelope: MessageFns<Envelope> = {
           message.delivery = DeliveryStatusContent.decode(reader, reader.uint32());
           continue;
         }
+        case 11: {
+          if (tag !== 90) {
+            break;
+          }
+
+          message.react = ReactContent.decode(reader, reader.uint32());
+          continue;
+        }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          message.edit = EditContent.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -6815,6 +6876,8 @@ export const Envelope: MessageFns<Envelope> = {
       typing: isSet(object.typing) ? TypingContent.fromJSON(object.typing) : undefined,
       ack: isSet(object.ack) ? AckContent.fromJSON(object.ack) : undefined,
       delivery: isSet(object.delivery) ? DeliveryStatusContent.fromJSON(object.delivery) : undefined,
+      react: isSet(object.react) ? ReactContent.fromJSON(object.react) : undefined,
+      edit: isSet(object.edit) ? EditContent.fromJSON(object.edit) : undefined,
     };
   },
 
@@ -6850,6 +6913,12 @@ export const Envelope: MessageFns<Envelope> = {
     if (message.delivery !== undefined) {
       obj.delivery = DeliveryStatusContent.toJSON(message.delivery);
     }
+    if (message.react !== undefined) {
+      obj.react = ReactContent.toJSON(message.react);
+    }
+    if (message.edit !== undefined) {
+      obj.edit = EditContent.toJSON(message.edit);
+    }
     return obj;
   },
 
@@ -6875,6 +6944,12 @@ export const Envelope: MessageFns<Envelope> = {
     message.ack = (object.ack !== undefined && object.ack !== null) ? AckContent.fromPartial(object.ack) : undefined;
     message.delivery = (object.delivery !== undefined && object.delivery !== null)
       ? DeliveryStatusContent.fromPartial(object.delivery)
+      : undefined;
+    message.react = (object.react !== undefined && object.react !== null)
+      ? ReactContent.fromPartial(object.react)
+      : undefined;
+    message.edit = (object.edit !== undefined && object.edit !== null)
+      ? EditContent.fromPartial(object.edit)
       : undefined;
     return message;
   },
@@ -7125,7 +7200,7 @@ export const AckContent: MessageFns<AckContent> = {
 };
 
 function createBaseDeliveryStatusContent(): DeliveryStatusContent {
-  return { msgId: "", status: undefined, ts: 0 };
+  return { msgId: "", status: undefined, ts: 0, eventType: "" };
 }
 
 export const DeliveryStatusContent: MessageFns<DeliveryStatusContent> = {
@@ -7138,6 +7213,9 @@ export const DeliveryStatusContent: MessageFns<DeliveryStatusContent> = {
     }
     if (message.ts !== 0) {
       writer.uint32(24).int64(message.ts);
+    }
+    if (message.eventType !== "") {
+      writer.uint32(34).string(message.eventType);
     }
     return writer;
   },
@@ -7173,6 +7251,14 @@ export const DeliveryStatusContent: MessageFns<DeliveryStatusContent> = {
           message.ts = longToNumber(reader.int64());
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.eventType = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -7191,6 +7277,11 @@ export const DeliveryStatusContent: MessageFns<DeliveryStatusContent> = {
         : "",
       status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
       ts: isSet(object.ts) ? globalThis.Number(object.ts) : 0,
+      eventType: isSet(object.eventType)
+        ? globalThis.String(object.eventType)
+        : isSet(object.event_type)
+        ? globalThis.String(object.event_type)
+        : "",
     };
   },
 
@@ -7205,6 +7296,9 @@ export const DeliveryStatusContent: MessageFns<DeliveryStatusContent> = {
     if (message.ts !== 0) {
       obj.ts = Math.round(message.ts);
     }
+    if (message.eventType !== "") {
+      obj.eventType = message.eventType;
+    }
     return obj;
   },
 
@@ -7218,6 +7312,251 @@ export const DeliveryStatusContent: MessageFns<DeliveryStatusContent> = {
       ? ResponseStatus.fromPartial(object.status)
       : undefined;
     message.ts = object.ts ?? 0;
+    message.eventType = object.eventType ?? "";
+    return message;
+  },
+};
+
+function createBaseReactContent(): ReactContent {
+  return { msgId: "", ciphertext: "", nonce: "", removed: false };
+}
+
+export const ReactContent: MessageFns<ReactContent> = {
+  encode(message: ReactContent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.msgId !== "") {
+      writer.uint32(10).string(message.msgId);
+    }
+    if (message.ciphertext !== "") {
+      writer.uint32(18).string(message.ciphertext);
+    }
+    if (message.nonce !== "") {
+      writer.uint32(26).string(message.nonce);
+    }
+    if (message.removed !== false) {
+      writer.uint32(32).bool(message.removed);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ReactContent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseReactContent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.msgId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.ciphertext = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.nonce = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.removed = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ReactContent {
+    return {
+      msgId: isSet(object.msgId)
+        ? globalThis.String(object.msgId)
+        : isSet(object.msg_id)
+        ? globalThis.String(object.msg_id)
+        : "",
+      ciphertext: isSet(object.ciphertext) ? globalThis.String(object.ciphertext) : "",
+      nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "",
+      removed: isSet(object.removed) ? globalThis.Boolean(object.removed) : false,
+    };
+  },
+
+  toJSON(message: ReactContent): unknown {
+    const obj: any = {};
+    if (message.msgId !== "") {
+      obj.msgId = message.msgId;
+    }
+    if (message.ciphertext !== "") {
+      obj.ciphertext = message.ciphertext;
+    }
+    if (message.nonce !== "") {
+      obj.nonce = message.nonce;
+    }
+    if (message.removed !== false) {
+      obj.removed = message.removed;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ReactContent>, I>>(base?: I): ReactContent {
+    return ReactContent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ReactContent>, I>>(object: I): ReactContent {
+    const message = createBaseReactContent();
+    message.msgId = object.msgId ?? "";
+    message.ciphertext = object.ciphertext ?? "";
+    message.nonce = object.nonce ?? "";
+    message.removed = object.removed ?? false;
+    return message;
+  },
+};
+
+function createBaseEditContent(): EditContent {
+  return { msgId: "", ciphertext: "", nonce: "", editedAt: 0, removed: false };
+}
+
+export const EditContent: MessageFns<EditContent> = {
+  encode(message: EditContent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.msgId !== "") {
+      writer.uint32(10).string(message.msgId);
+    }
+    if (message.ciphertext !== "") {
+      writer.uint32(18).string(message.ciphertext);
+    }
+    if (message.nonce !== "") {
+      writer.uint32(26).string(message.nonce);
+    }
+    if (message.editedAt !== 0) {
+      writer.uint32(32).int64(message.editedAt);
+    }
+    if (message.removed !== false) {
+      writer.uint32(40).bool(message.removed);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): EditContent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseEditContent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.msgId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.ciphertext = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.nonce = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.editedAt = longToNumber(reader.int64());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.removed = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): EditContent {
+    return {
+      msgId: isSet(object.msgId)
+        ? globalThis.String(object.msgId)
+        : isSet(object.msg_id)
+        ? globalThis.String(object.msg_id)
+        : "",
+      ciphertext: isSet(object.ciphertext) ? globalThis.String(object.ciphertext) : "",
+      nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "",
+      editedAt: isSet(object.editedAt)
+        ? globalThis.Number(object.editedAt)
+        : isSet(object.edited_at)
+        ? globalThis.Number(object.edited_at)
+        : 0,
+      removed: isSet(object.removed) ? globalThis.Boolean(object.removed) : false,
+    };
+  },
+
+  toJSON(message: EditContent): unknown {
+    const obj: any = {};
+    if (message.msgId !== "") {
+      obj.msgId = message.msgId;
+    }
+    if (message.ciphertext !== "") {
+      obj.ciphertext = message.ciphertext;
+    }
+    if (message.nonce !== "") {
+      obj.nonce = message.nonce;
+    }
+    if (message.editedAt !== 0) {
+      obj.editedAt = Math.round(message.editedAt);
+    }
+    if (message.removed !== false) {
+      obj.removed = message.removed;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<EditContent>, I>>(base?: I): EditContent {
+    return EditContent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<EditContent>, I>>(object: I): EditContent {
+    const message = createBaseEditContent();
+    message.msgId = object.msgId ?? "";
+    message.ciphertext = object.ciphertext ?? "";
+    message.nonce = object.nonce ?? "";
+    message.editedAt = object.editedAt ?? 0;
+    message.removed = object.removed ?? false;
     return message;
   },
 };
