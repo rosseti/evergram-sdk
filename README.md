@@ -58,6 +58,7 @@ Run the fuller version of this with persistence: `npm run example:echo-bot`.
 | `examples/moderation-bot` | Group management — auto-approving join requests by rule. |
 | `examples/webhook-bridge` | Bridging Evergram messages to an external HTTP endpoint. |
 | `examples/paywall-bot` | Monetization — gating a managed group behind a one-time payment_request/payment_receipt exchange. |
+| `examples/visitor-bot` | Widget-visitor chat — echoes back anonymous visitor messages on an existing widget, and persists active rooms to disk so a restart can reclaim them (see `EvergramCore.registerVisitorSession`). Open the printed `/widget/{id}` URL in a browser to act as the visitor. |
 
 Run with `npm run example:<name>`. Each example persists its generated
 wallet/device to `identity.json` next to it on first run (gitignored) so

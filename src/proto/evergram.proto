@@ -112,7 +112,217 @@ message ClientMessage {
 
     AcceptGroupInvite  accept_group_invite  = 39;
     DeclineGroupInvite decline_group_invite = 40;
+
+    CreateEphemeralRoom create_ephemeral_room = 41;
+    RelayMessage        relay_message         = 42;
+
+    CreateWidget create_widget = 43;
+    DeleteWidget delete_widget = 44;
+    UpdateWidget update_widget = 45;
+    ListWidgets  list_widgets  = 46;
+    GetWidgetInfo get_widget_info = 47;
+
+    CreateVisitorRoom create_visitor_room = 48;
   }
+}
+
+// Anonymous ephemeral side-chat ("magic link"): the link creator is an
+// authenticated identity (this message goes through the normal auth gate +
+// rate limiting below), but the joiner who opens the link is never
+// authenticated — see RelayMessage, which IS exempted from auth, and is the
+// only thing the anonymous side ever sends.
+//
+// The gateway relays RelayMessage as an opaque blob between the two sockets
+// paired on room_token — it never reaches HotPocket/consensus, and the
+// gateway never sees plaintext: payload is nacl.secretbox ciphertext keyed
+// by a secret that lives only in the link's URL fragment, which browsers
+// never send to any server. This was originally a WebRTC P2P data channel
+// with the gateway only relaying SDP/ICE signaling; that needs a TURN relay
+// to work across arbitrary NATs (STUN alone isn't enough — confirmed by
+// hand, not just in theory), which is new infra/cost this feature was
+// explicitly trying to avoid. Relaying the actual (still E2E-encrypted)
+// chat content through the same gateway sidesteps NAT traversal entirely
+// and is also just consistent with how the rest of Evergram's chat already
+// works (sender -> gateway -> recipient, never P2P).
+message CreateEphemeralRoom {
+}
+
+message CreateEphemeralRoomResponse {
+  ResponseStatus status     = 1;
+  string         room_token = 2;
+}
+
+enum RelayMessageKind {
+  // Sent by the anonymous joiner as its first frame for a room_token —
+  // both claims the room's single joiner slot and tells the gateway to
+  // relay it (and only it) to the creator from then on. The creator
+  // receiving this relayed is its cue to flip to "connected" in the UI.
+  RELAY_JOINED = 0;
+  // Content-bearing kinds — payload is always {nonce, ciphertext} JSON
+  // from nacl.secretbox, opaque to the gateway. The plaintext underneath
+  // is itself a small JSON envelope ({msgId, sender, text, ...}) so both
+  // sides can track which message a react/edit/remove targets without the
+  // gateway ever needing to know (it just relays the kind + opaque blob,
+  // same as it already does for TEXT — see relayMessage.ts).
+  RELAY_TEXT   = 1;
+  RELAY_REACT  = 3;
+  RELAY_EDIT   = 4;
+  RELAY_REMOVE = 5;
+  // Gateway-synthesized (never sent by a client) when one side's socket
+  // closes, so the remaining side's UI isn't left guessing — see
+  // ephemeralRoomRegistry.ts. Its payload, when non-empty, is plaintext
+  // JSON ({deadlineAt}) carrying the reconnect grace window's deadline,
+  // not encrypted content.
+  RELAY_LEFT   = 2;
+  // Sent by a previously-paired side reconnecting after a drop (e.g. a
+  // page reload), reusing the same room_token instead of minting a new
+  // one. Only succeeds against a `reclaimable` room (see
+  // ephemeralRoomRegistry.ts's reclaimCreatorSlot) within its reconnect
+  // grace window.
+  RELAY_RECLAIM = 6;
+  // Sent by either side currently holding a slot in the room (the widget
+  // owner or the visitor) to deliberately and permanently close it —
+  // unlike RELAY_LEFT this is not a drop that can be reconnected from;
+  // the room is deleted outright (see ephemeralRoomRegistry.ts's
+  // endRoom).
+  RELAY_END = 7;
+  // Gateway-synthesized (never sent by a client), like RELAY_LEFT — but
+  // sent only to the one socket whose own RELAY_JOINED/RELAY_RECLAIM just
+  // lost a race against another socket that already holds that slot live.
+  // Distinct from "the room is over": the room is fine, just claimed by
+  // someone else (the widget-visitor flow pushes VisitorRoomRequestedEvent
+  // to every device of the owner, but only the first to claim the room
+  // actually gets it — see relayMessage.ts/ephemeralRoomRegistry.ts). Tells
+  // that one socket to give up locally instead of silently sitting in a
+  // session it was never actually paired into.
+  RELAY_CLAIMED_ELSEWHERE = 8;
+}
+
+message RelayMessage {
+  string           room_token = 1;
+  RelayMessageKind kind       = 2;
+  bytes            payload    = 3;
+}
+
+// Embeddable chat widget: a Widget is a revocable, opaque public
+// identifier (widget_id) that resolves to an owning identity + its
+// devices, so an anonymous website visitor can reach that identity
+// without ever seeing or addressing it directly. owner_identity_key is
+// fixed at creation — there is no transfer-ownership operation. Deleting
+// a widget is a soft delete (the `deleted` flag): widget_id is retired
+// forever, never reissued, and the owner's ListWidgets history is kept.
+message Widget {
+  string widget_id      = 1;
+  string name           = 2;
+  bool   enabled        = 3;
+  bool   deleted        = 4;
+  int64  widget_version = 5;
+  int64  created_at     = 6;
+}
+
+message CreateWidget {
+  string name = 1;
+}
+
+message CreateWidgetResponse {
+  ResponseStatus status = 1;
+  Widget         widget = 2;
+}
+
+message DeleteWidget {
+  string widget_id = 1;
+}
+
+message DeleteWidgetResponse {
+  ResponseStatus status    = 1;
+  string         widget_id = 2;
+}
+
+message UpdateWidget {
+  string        widget_id = 1;
+  optional bool enabled   = 2;
+}
+
+message UpdateWidgetResponse {
+  ResponseStatus status = 1;
+  Widget         widget = 2;
+}
+
+message ListWidgets {
+}
+
+message ListWidgetsResponse {
+  ResponseStatus  status  = 1;
+  repeated Widget widgets = 2;
+}
+
+// The ONLY message in this protocol answerable with no `authorization` at
+// all — the gateway calls this on behalf of an anonymous widget visitor
+// who has no session. Must never act as an existence/enumeration oracle:
+// an unknown, disabled, or deleted widget_id all return the exact same
+// { enabled: false, devices: [] } shape. owner_identity_key is consumed
+// only by the gateway internally (to find live device sockets and seal
+// the room key) — it is never relayed onward to the visitor.
+message GetWidgetInfo {
+  string widget_id = 1;
+}
+
+message GetWidgetInfoResponse {
+  ResponseStatus  status             = 1;
+  bool            enabled            = 2;
+  string          owner_identity_key = 3;
+  repeated Device devices            = 4;
+}
+
+// Anonymous visitor -> gateway: addresses a widget, never an identity
+// directly. sym_key is generated client-side by the visitor; the gateway
+// sees it in plaintext for only as long as it takes to seal it per-device
+// via encryptSymKeyForDevices (the same thing it already does for normal
+// chat key distribution — this is not a new exception to any rule).
+// first_message_payload is the visitor's first message, already encrypted
+// with sym_key in the same envelope shape as a normal RELAY_TEXT payload —
+// the gateway only ever carries it, never decrypts it. No room is created
+// just by opening the widget; this message (and the room it creates) only
+// ever exists because the visitor actually sent something.
+message CreateVisitorRoom {
+  string widget_id             = 1;
+  bytes  sym_key                = 2;
+  string visitor_label         = 3;
+  bytes  first_message_payload = 4;
+}
+
+message CreateVisitorRoomResponse {
+  ResponseStatus status     = 1;
+  string         room_token = 2;
+}
+
+// Server -> client push, sent to every open device socket of the widget's
+// resolved owner. sealed_key_by_device carries one sealed copy of sym_key
+// per device (each device decrypts with its own private key); widget_id
+// lets the owner's UI show which widget the conversation came in on
+// without duplicating its name into every event.
+message SealedKeyForDevice {
+  string ciphertext       = 1;
+  string nonce            = 2;
+  string ephemeral_pubkey = 3;
+}
+
+message VisitorRoomRequestedEvent {
+  string                           room_token            = 1;
+  string                           widget_id              = 2;
+  string                           visitor_label          = 3;
+  string                           origin                 = 4;
+  int64                            ts                     = 5;
+  map<string, SealedKeyForDevice>  sealed_key_by_device   = 6;
+  bytes                            first_message_payload  = 7;
+}
+
+// Pushed to the visitor if a room they created is never claimed (the
+// owner had a device online at creation time but it disconnected before
+// joining — the common "owner offline" case is rejected synchronously,
+// before any room exists, so this only covers that rarer race).
+message VisitorRoomTimedOutEvent {
+  string room_token = 1;
 }
 
 message SetChatMode {
@@ -318,6 +528,19 @@ message ServerMessage {
     AcceptGroupInviteResponse  accept_group_invite_response  = 45;
     DeclineGroupInviteResponse decline_group_invite_response = 46;
     GroupInviteReceivedEvent   group_invite_received         = 47;
+
+    CreateEphemeralRoomResponse create_ephemeral_room_response = 48;
+    RelayMessage                relay_message                  = 49;
+
+    CreateWidgetResponse  create_widget_response  = 50;
+    DeleteWidgetResponse  delete_widget_response  = 51;
+    UpdateWidgetResponse  update_widget_response  = 52;
+    ListWidgetsResponse   list_widgets_response   = 53;
+    GetWidgetInfoResponse get_widget_info_response = 54;
+
+    CreateVisitorRoomResponse  create_visitor_room_response   = 55;
+    VisitorRoomRequestedEvent  visitor_room_requested_event   = 56;
+    VisitorRoomTimedOutEvent   visitor_room_timed_out_event   = 57;
   }
 }
 

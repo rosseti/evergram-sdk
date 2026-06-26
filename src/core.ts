@@ -7,7 +7,9 @@ import {
   PendingChatRequest,
   PendingGroupInvite,
   Profile,
+  RelayMessage as WireRelayMessage,
   ServerMessage,
+  VisitorRoomRequestedEvent,
 } from "./proto/evergram";
 import { Transport } from "./transport";
 import { EvergramWallet, signAuthChallenge } from "./wallet";
@@ -27,6 +29,16 @@ import {
   errorFromCode,
 } from "./errors";
 import { MessageContent, parseMessageContent } from "./message-content";
+import {
+  decryptTextFramePayload,
+  EphemeralEditEvent,
+  EphemeralReactEvent,
+  EphemeralRelaySession,
+  EphemeralRelayStatus,
+  EphemeralRemoveEvent,
+  EphemeralTextEvent,
+} from "./ephemeral-relay-session";
+import { decodeRelayPayload, encodeRelayPayload, fromWireKind, RelayMessageKind, toWireKind } from "./relay-message-codec";
 
 // Bounds pendingEnvelopes (see deliverOrQueue) for a chat whose symmetric key
 // never resolves — e.g. chat_key_unsealable below, or any other case where
@@ -112,6 +124,57 @@ export interface EvergramMessageDeleted {
   removedAt: number;
 }
 
+// Widget-visitor chat — see [[evergram-sdk-relay-duplication]] memory.
+// roomToken (not chatId) is the correlation key here: these conversations
+// are never contract-backed chats, just an ephemeral gateway relay (see
+// ephemeral-relay-session.ts).
+export interface EvergramVisitorMessage extends EphemeralTextEvent {
+  roomToken: string;
+}
+
+export interface EvergramVisitorReaction extends EphemeralReactEvent {
+  roomToken: string;
+}
+
+export interface EvergramVisitorMessageEdited extends EphemeralEditEvent {
+  roomToken: string;
+}
+
+export interface EvergramVisitorMessageDeleted extends EphemeralRemoveEvent {
+  roomToken: string;
+}
+
+export interface EvergramVisitorRoomRequested {
+  roomToken: string;
+  widgetId: string;
+  visitorLabel: string;
+  origin: string;
+  ts: number;
+  /** Null only if the bundled first message failed to decrypt — see handleVisitorRoomRequestedEvent. */
+  firstMessage: EphemeralTextEvent | null;
+  /**
+   * This device's own copy of the room's symmetric key, already unsealed —
+   * not a secret being newly exposed, just the same key this process needed
+   * to decrypt `firstMessage` above. Handed out so a long-running bot can
+   * persist {roomToken, symKey, widgetId, visitorLabel, origin} itself and
+   * call registerVisitorSession() with it after a restart — there is no
+   * contract/gateway-side record of active rooms to recover this from
+   * otherwise (see registerVisitorSession's doc comment).
+   */
+  symKey: Uint8Array;
+}
+
+export interface EvergramVisitorStatusChanged {
+  roomToken: string;
+  status: EphemeralRelayStatus;
+  /** Only set alongside status "peer_left" — see EphemeralStatusMeta. */
+  peerLeftDeadline?: number;
+}
+
+export interface EvergramVisitorRoomTimedOut {
+  roomToken: string;
+}
+
 // Low-level, faithful mirror of the wire protocol — see webapp/app/lib/evergram-client.ts
 // for the browser equivalent this is modeled on. EvergramBot (bot.ts) wraps
 // this with an ergonomic API; use Core directly when you need control over
@@ -122,7 +185,11 @@ export interface EvergramMessageDeleted {
 // "reaction" (EvergramReaction), "messageEdited" (EvergramMessageEdited),
 // "messageDeleted" (EvergramMessageDeleted), "joinRequested" (JoinRequestedEvent),
 // "chatRequestReceived" (PendingChatRequest), "groupInviteReceived" (PendingGroupInvite),
-// "restricted" (ReputationUpdated), "error" (Error).
+// "restricted" (ReputationUpdated), "error" (Error),
+// "visitorRoomRequested" (EvergramVisitorRoomRequested), "visitorMessage" (EvergramVisitorMessage),
+// "visitorReaction" (EvergramVisitorReaction), "visitorMessageEdited" (EvergramVisitorMessageEdited),
+// "visitorMessageDeleted" (EvergramVisitorMessageDeleted), "visitorStatusChanged" (EvergramVisitorStatusChanged),
+// "visitorRoomTimedOut" (EvergramVisitorRoomTimedOut).
 export class EvergramCore extends EventEmitter {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
@@ -139,6 +206,15 @@ export class EvergramCore extends EventEmitter {
   private readonly pendingEnvelopes = new Map<string, Envelope[]>();
   private readonly pendingChatRequests = new Map<string, PendingChatRequest>();
   private readonly pendingGroupInvites = new Map<string, PendingGroupInvite>();
+  // Live widget-visitor relay sessions this process is currently a party
+  // to, keyed by roomToken — see [[evergram-sdk-relay-duplication]]. Not a
+  // separate registry file (unlike the webapp's visitor-session-registry.ts,
+  // which exists specifically to survive React re-renders); a plain field
+  // here is equivalent to how `chats`/`symKeys` already work.
+  private readonly visitorSessions = new Map<
+    string,
+    { session: EphemeralRelaySession; widgetId: string; visitorLabel: string; origin: string }
+  >();
 
   private authenticated = false;
   isRestricted = false;
@@ -176,6 +252,7 @@ export class EvergramCore extends EventEmitter {
           // silently swallows envelopes for any chat that existed before
           // this connection, since nothing else ever re-populates them.
           this.syncChats();
+          this.resyncVisitorSessions();
           this.emit("authenticated");
         })
         .catch((err) => this.emit("error", err));
@@ -629,6 +706,215 @@ export class EvergramCore extends EventEmitter {
     return this.chats.get(chatId);
   }
 
+  // ===================== widget-visitor chat =====================
+  // See [[evergram-sdk-relay-duplication]] memory — ported from the
+  // webapp's widget feature, kept in sync manually rather than shared.
+
+  async createWidget(name: string) {
+    const msg = ClientMessage.create({ createWidget: { name } });
+    return this.requestWithReauth(msg, "createWidgetResponse");
+  }
+
+  async deleteWidget(widgetId: string) {
+    const msg = ClientMessage.create({ deleteWidget: { widgetId } });
+    return this.requestWithReauth(msg, "deleteWidgetResponse");
+  }
+
+  async updateWidget(widgetId: string, opts: { enabled?: boolean }) {
+    const msg = ClientMessage.create({ updateWidget: { widgetId, enabled: opts.enabled } });
+    return this.requestWithReauth(msg, "updateWidgetResponse");
+  }
+
+  async listWidgets() {
+    const msg = ClientMessage.create({ listWidgets: {} });
+    return this.requestWithReauth(msg, "listWidgetsResponse");
+  }
+
+  // Deliberately plain request(), not requestWithReauth() — the gateway
+  // answers this one with no authorization check at all (see the webapp
+  // proto's comment on GetWidgetInfo), so the reauth-retry path can never
+  // actually trigger here.
+  async getWidgetInfo(widgetId: string) {
+    const msg = ClientMessage.create({ getWidgetInfo: { widgetId } });
+    return this.request(msg, "getWidgetInfoResponse");
+  }
+
+  // sender defaults to this bot's own profile nickname, mirroring the
+  // webapp owner-side UX (defaults to the agent's real nickname instead of
+  // "Anonymous," still overridable per call).
+  sendVisitorMessage(roomToken: string, text: string, sender?: string): EphemeralTextEvent {
+    return this.getVisitorSessionOrThrow(roomToken).session.send(text, sender ?? this.profile?.nickname ?? "");
+  }
+
+  reactToVisitorMessage(roomToken: string, msgId: string, emoji: string | null): void {
+    this.getVisitorSessionOrThrow(roomToken).session.sendReaction(msgId, emoji);
+  }
+
+  editVisitorMessage(roomToken: string, msgId: string, text: string): EphemeralEditEvent {
+    return this.getVisitorSessionOrThrow(roomToken).session.editMessage(msgId, text);
+  }
+
+  removeVisitorMessage(roomToken: string, msgId: string): EphemeralRemoveEvent {
+    return this.getVisitorSessionOrThrow(roomToken).session.removeMessage(msgId);
+  }
+
+  // Permanently closes the room (see ephemeralRoomRegistry.ts's endRoom on
+  // the gateway) — unlike just disconnecting, the visitor is notified
+  // immediately and can't reconnect into it afterward.
+  endVisitorRoom(roomToken: string): void {
+    const entry = this.getVisitorSessionOrThrow(roomToken);
+    entry.session.end();
+    this.visitorSessions.delete(roomToken);
+  }
+
+  // Read-only projection of the internal registry, for EvergramBot to
+  // reconstruct a VisitorSessionHandle's metadata for events that only
+  // carry a roomToken (visitorMessage/visitorReaction/etc.) — deliberately
+  // doesn't expose the EphemeralRelaySession instance itself.
+  getVisitorSession(roomToken: string): { widgetId: string; visitorLabel: string; origin: string } | undefined {
+    const entry = this.visitorSessions.get(roomToken);
+    if (!entry) return undefined;
+    return { widgetId: entry.widgetId, visitorLabel: entry.visitorLabel, origin: entry.origin };
+  }
+
+  private getVisitorSessionOrThrow(roomToken: string) {
+    const entry = this.visitorSessions.get(roomToken);
+    if (!entry) {
+      throw new EvergramNotFoundError("visitor_room_not_found", `Unknown or expired visitor room ${roomToken}`);
+    }
+    return entry;
+  }
+
+  // Fire-and-forget, mirroring sendRelayMessage in the webapp's
+  // evergram-client.ts — no request/response pair on the wire for any
+  // RelayMessage kind, the gateway just relays it onward (or doesn't).
+  private sendRelayMessage(roomToken: string, kind: RelayMessageKind, payloadText: string): void {
+    this.transport.send(
+      ClientMessage.create({
+        relayMessage: { roomToken, kind: toWireKind(kind), payload: encodeRelayPayload(payloadText) },
+      })
+    );
+  }
+
+  // Re-announces "joined" for every visitor room this process is still
+  // tracking, on every (re)connection — not just the first time a room is
+  // registered. Deliberate improvement over the webapp, which only does
+  // this once at initial registration (a known, documented gap there) —
+  // a long-running bot process hits transport reconnects far more often
+  // than a browser tab ever does, so leaving this gap unfixed here would
+  // bite much harder. See joinRoom/reclaimCreatorSlot in
+  // ephemeralRoomRegistry.ts for why a fresh "joined" safely reclaims an
+  // idle joiner slot within its reconnect grace window either way.
+  private resyncVisitorSessions(): void {
+    for (const roomToken of this.visitorSessions.keys()) {
+      this.sendRelayMessage(roomToken, "joined", "");
+    }
+  }
+
+  // Shared by handleVisitorRoomRequestedEvent (a room arriving live, key
+  // freshly unsealed) and registerVisitorSession (a room rehydrated from
+  // whatever a long-running bot persisted itself across a restart) — both
+  // end up with the same {roomToken, symKey, widgetId, visitorLabel,
+  // origin}, just from different sources, and need identical wiring.
+  private createVisitorSession(
+    roomToken: string,
+    symKey: Uint8Array,
+    meta: { widgetId: string; visitorLabel: string; origin: string }
+  ): void {
+    const session = new EphemeralRelaySession({
+      symKey,
+      sendFrame: (kind, payload) => this.sendRelayMessage(roomToken, kind, payload),
+      onMessage: (e) => this.emit("visitorMessage", { roomToken, ...e }),
+      onReaction: (e) => this.emit("visitorReaction", { roomToken, ...e }),
+      onEdit: (e) => this.emit("visitorMessageEdited", { roomToken, ...e }),
+      onRemove: (e) => this.emit("visitorMessageDeleted", { roomToken, ...e }),
+      onStatusChange: (status, statusMeta) => {
+        // Mirrors endVisitorRoom's own cleanup for the self-initiated case
+        // — "closed" can also arrive remotely (the visitor ending the
+        // chat, or this device losing a join/reclaim race to another of
+        // this bot's own devices). Without this, the entry lingers forever
+        // and resyncVisitorSessions keeps re-sending "joined" for a room
+        // that's already gone, on every future reconnect.
+        if (status === "closed") this.visitorSessions.delete(roomToken);
+        this.emit("visitorStatusChanged", { roomToken, status, peerLeftDeadline: statusMeta?.peerLeftDeadline });
+      },
+    });
+
+    this.visitorSessions.set(roomToken, { session, ...meta });
+  }
+
+  // Rehydrates a visitor room this process was a party to before a restart
+  // — there is no contract/gateway-side record of active rooms (see the
+  // developer docs' "no offline inbox, no persistence" — this relay is
+  // in-memory only), so a freshly-started process has no way to know one
+  // ever existed unless the caller persisted it themselves (capture
+  // {roomToken, symKey, widgetId, visitorLabel, origin} from the
+  // "visitorRoomRequested" event when the room first arrives, drop it once
+  // "visitorStatusChanged" reports "closed"). Call before connect(): once
+  // authenticated, resyncVisitorSessions() sends "joined" for every
+  // registered room, which reclaims this room's joiner slot from the
+  // gateway the same way a bare transport reconnect already does, as long
+  // as it's within ephemeralRoomRegistry.ts's RECONNECT_GRACE_MS window.
+  registerVisitorSession(meta: {
+    roomToken: string;
+    symKey: Uint8Array;
+    widgetId: string;
+    visitorLabel: string;
+    origin: string;
+  }): void {
+    if (this.visitorSessions.has(meta.roomToken)) return;
+    this.createVisitorSession(meta.roomToken, meta.symKey, meta);
+  }
+
+  private handleVisitorRoomRequestedEvent(event: VisitorRoomRequestedEvent): void {
+    const sealed = event.sealedKeyByDevice[this.device.deviceId];
+    if (!sealed) return; // sealed for a different device of this same identity, not this one
+
+    const symKey = openSealedSymKey(
+      { ciphertext: sealed.ciphertext, nonce: sealed.nonce, ephemeralPubkey: sealed.ephemeralPubkey },
+      this.device.devicePrivHex
+    );
+    if (!symKey) {
+      this.emit("error", new EvergramValidationError(
+        "visitor_room_key_unsealable",
+        `failed to open visitor room ${event.roomToken}'s symmetric key with this device's private key`
+      ));
+      return;
+    }
+
+    const firstMessage = decryptTextFramePayload(symKey, decodeRelayPayload(event.firstMessagePayload));
+
+    this.createVisitorSession(event.roomToken, symKey, {
+      widgetId: event.widgetId,
+      visitorLabel: event.visitorLabel,
+      origin: event.origin,
+    });
+
+    // Eagerly join — flips the visitor's own UI from "waiting" to
+    // "connected" without this bot doing anything further.
+    this.sendRelayMessage(event.roomToken, "joined", "");
+
+    this.emit("visitorRoomRequested", {
+      roomToken: event.roomToken,
+      widgetId: event.widgetId,
+      visitorLabel: event.visitorLabel,
+      origin: event.origin,
+      ts: Number(event.ts),
+      firstMessage,
+      symKey,
+    });
+  }
+
+  private handleRelayFrame(frame: WireRelayMessage): void {
+    const entry = this.visitorSessions.get(frame.roomToken);
+    if (!entry) return; // room unknown to this process (never ours, or already ended) — nothing to do
+
+    const kind = fromWireKind(frame.kind);
+    if (!kind) return;
+
+    entry.session.handleFrame(kind, decodeRelayPayload(frame.payload));
+  }
+
   // ===================== internal wire plumbing =====================
 
   private getChatOrThrow(chatId: string): ChatInfo {
@@ -816,6 +1102,18 @@ export class EvergramCore extends EventEmitter {
 
     if (msg.joinRequestedEvent) {
       this.emit("joinRequested", msg.joinRequestedEvent);
+    }
+
+    if (msg.visitorRoomRequestedEvent) {
+      this.handleVisitorRoomRequestedEvent(msg.visitorRoomRequestedEvent);
+    }
+
+    if (msg.relayMessage) {
+      this.handleRelayFrame(msg.relayMessage);
+    }
+
+    if (msg.visitorRoomTimedOutEvent) {
+      this.emit("visitorRoomTimedOut", msg.visitorRoomTimedOutEvent);
     }
   }
 

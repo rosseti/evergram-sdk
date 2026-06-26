@@ -1,4 +1,5 @@
 node_modules/
 dist/
 examples/*/identity.json
+examples/*/visitor-sessions.json
 .env

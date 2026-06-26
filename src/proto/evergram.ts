@@ -54,6 +54,127 @@ export function chainFamilyToJSON(object: ChainFamily): string {
   }
 }
 
+export enum RelayMessageKind {
+  /**
+   * RELAY_JOINED - Sent by the anonymous joiner as its first frame for a room_token —
+   * both claims the room's single joiner slot and tells the gateway to
+   * relay it (and only it) to the creator from then on. The creator
+   * receiving this relayed is its cue to flip to "connected" in the UI.
+   */
+  RELAY_JOINED = 0,
+  /**
+   * RELAY_TEXT - Content-bearing kinds — payload is always {nonce, ciphertext} JSON
+   * from nacl.secretbox, opaque to the gateway. The plaintext underneath
+   * is itself a small JSON envelope ({msgId, sender, text, ...}) so both
+   * sides can track which message a react/edit/remove targets without the
+   * gateway ever needing to know (it just relays the kind + opaque blob,
+   * same as it already does for TEXT — see relayMessage.ts).
+   */
+  RELAY_TEXT = 1,
+  RELAY_REACT = 3,
+  RELAY_EDIT = 4,
+  RELAY_REMOVE = 5,
+  /**
+   * RELAY_LEFT - Gateway-synthesized (never sent by a client) when one side's socket
+   * closes, so the remaining side's UI isn't left guessing — see
+   * ephemeralRoomRegistry.ts. Its payload, when non-empty, is plaintext
+   * JSON ({deadlineAt}) carrying the reconnect grace window's deadline,
+   * not encrypted content.
+   */
+  RELAY_LEFT = 2,
+  /**
+   * RELAY_RECLAIM - Sent by a previously-paired side reconnecting after a drop (e.g. a
+   * page reload), reusing the same room_token instead of minting a new
+   * one. Only succeeds against a `reclaimable` room (see
+   * ephemeralRoomRegistry.ts's reclaimCreatorSlot) within its reconnect
+   * grace window.
+   */
+  RELAY_RECLAIM = 6,
+  /**
+   * RELAY_END - Sent by either side currently holding a slot in the room (the widget
+   * owner or the visitor) to deliberately and permanently close it —
+   * unlike RELAY_LEFT this is not a drop that can be reconnected from;
+   * the room is deleted outright (see ephemeralRoomRegistry.ts's
+   * endRoom).
+   */
+  RELAY_END = 7,
+  /**
+   * RELAY_CLAIMED_ELSEWHERE - Gateway-synthesized (never sent by a client), like RELAY_LEFT — but
+   * sent only to the one socket whose own RELAY_JOINED/RELAY_RECLAIM just
+   * lost a race against another socket that already holds that slot live.
+   * Distinct from "the room is over": the room is fine, just claimed by
+   * someone else (the widget-visitor flow pushes VisitorRoomRequestedEvent
+   * to every device of the owner, but only the first to claim the room
+   * actually gets it — see relayMessage.ts/ephemeralRoomRegistry.ts). Tells
+   * that one socket to give up locally instead of silently sitting in a
+   * session it was never actually paired into.
+   */
+  RELAY_CLAIMED_ELSEWHERE = 8,
+  UNRECOGNIZED = -1,
+}
+
+export function relayMessageKindFromJSON(object: any): RelayMessageKind {
+  switch (object) {
+    case 0:
+    case "RELAY_JOINED":
+      return RelayMessageKind.RELAY_JOINED;
+    case 1:
+    case "RELAY_TEXT":
+      return RelayMessageKind.RELAY_TEXT;
+    case 3:
+    case "RELAY_REACT":
+      return RelayMessageKind.RELAY_REACT;
+    case 4:
+    case "RELAY_EDIT":
+      return RelayMessageKind.RELAY_EDIT;
+    case 5:
+    case "RELAY_REMOVE":
+      return RelayMessageKind.RELAY_REMOVE;
+    case 2:
+    case "RELAY_LEFT":
+      return RelayMessageKind.RELAY_LEFT;
+    case 6:
+    case "RELAY_RECLAIM":
+      return RelayMessageKind.RELAY_RECLAIM;
+    case 7:
+    case "RELAY_END":
+      return RelayMessageKind.RELAY_END;
+    case 8:
+    case "RELAY_CLAIMED_ELSEWHERE":
+      return RelayMessageKind.RELAY_CLAIMED_ELSEWHERE;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return RelayMessageKind.UNRECOGNIZED;
+  }
+}
+
+export function relayMessageKindToJSON(object: RelayMessageKind): string {
+  switch (object) {
+    case RelayMessageKind.RELAY_JOINED:
+      return "RELAY_JOINED";
+    case RelayMessageKind.RELAY_TEXT:
+      return "RELAY_TEXT";
+    case RelayMessageKind.RELAY_REACT:
+      return "RELAY_REACT";
+    case RelayMessageKind.RELAY_EDIT:
+      return "RELAY_EDIT";
+    case RelayMessageKind.RELAY_REMOVE:
+      return "RELAY_REMOVE";
+    case RelayMessageKind.RELAY_LEFT:
+      return "RELAY_LEFT";
+    case RelayMessageKind.RELAY_RECLAIM:
+      return "RELAY_RECLAIM";
+    case RelayMessageKind.RELAY_END:
+      return "RELAY_END";
+    case RelayMessageKind.RELAY_CLAIMED_ELSEWHERE:
+      return "RELAY_CLAIMED_ELSEWHERE";
+    case RelayMessageKind.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export interface ChainIdentity {
   chainFamily: ChainFamily;
   /** rAddress, 0x..., etc */
@@ -146,6 +267,184 @@ export interface ClientMessage {
   checkBlocked?: CheckBlocked | undefined;
   acceptGroupInvite?: AcceptGroupInvite | undefined;
   declineGroupInvite?: DeclineGroupInvite | undefined;
+  createEphemeralRoom?: CreateEphemeralRoom | undefined;
+  relayMessage?: RelayMessage | undefined;
+  createWidget?: CreateWidget | undefined;
+  deleteWidget?: DeleteWidget | undefined;
+  updateWidget?: UpdateWidget | undefined;
+  listWidgets?: ListWidgets | undefined;
+  getWidgetInfo?: GetWidgetInfo | undefined;
+  createVisitorRoom?: CreateVisitorRoom | undefined;
+}
+
+/**
+ * Anonymous ephemeral side-chat ("magic link"): the link creator is an
+ * authenticated identity (this message goes through the normal auth gate +
+ * rate limiting below), but the joiner who opens the link is never
+ * authenticated — see RelayMessage, which IS exempted from auth, and is the
+ * only thing the anonymous side ever sends.
+ *
+ * The gateway relays RelayMessage as an opaque blob between the two sockets
+ * paired on room_token — it never reaches HotPocket/consensus, and the
+ * gateway never sees plaintext: payload is nacl.secretbox ciphertext keyed
+ * by a secret that lives only in the link's URL fragment, which browsers
+ * never send to any server. This was originally a WebRTC P2P data channel
+ * with the gateway only relaying SDP/ICE signaling; that needs a TURN relay
+ * to work across arbitrary NATs (STUN alone isn't enough — confirmed by
+ * hand, not just in theory), which is new infra/cost this feature was
+ * explicitly trying to avoid. Relaying the actual (still E2E-encrypted)
+ * chat content through the same gateway sidesteps NAT traversal entirely
+ * and is also just consistent with how the rest of Evergram's chat already
+ * works (sender -> gateway -> recipient, never P2P).
+ */
+export interface CreateEphemeralRoom {
+}
+
+export interface CreateEphemeralRoomResponse {
+  status: ResponseStatus | undefined;
+  roomToken: string;
+}
+
+export interface RelayMessage {
+  roomToken: string;
+  kind: RelayMessageKind;
+  payload: Uint8Array;
+}
+
+/**
+ * Embeddable chat widget: a Widget is a revocable, opaque public
+ * identifier (widget_id) that resolves to an owning identity + its
+ * devices, so an anonymous website visitor can reach that identity
+ * without ever seeing or addressing it directly. owner_identity_key is
+ * fixed at creation — there is no transfer-ownership operation. Deleting
+ * a widget is a soft delete (the `deleted` flag): widget_id is retired
+ * forever, never reissued, and the owner's ListWidgets history is kept.
+ */
+export interface Widget {
+  widgetId: string;
+  name: string;
+  enabled: boolean;
+  deleted: boolean;
+  widgetVersion: number;
+  createdAt: number;
+}
+
+export interface CreateWidget {
+  name: string;
+}
+
+export interface CreateWidgetResponse {
+  status: ResponseStatus | undefined;
+  widget: Widget | undefined;
+}
+
+export interface DeleteWidget {
+  widgetId: string;
+}
+
+export interface DeleteWidgetResponse {
+  status: ResponseStatus | undefined;
+  widgetId: string;
+}
+
+export interface UpdateWidget {
+  widgetId: string;
+  enabled?: boolean | undefined;
+}
+
+export interface UpdateWidgetResponse {
+  status: ResponseStatus | undefined;
+  widget: Widget | undefined;
+}
+
+export interface ListWidgets {
+}
+
+export interface ListWidgetsResponse {
+  status: ResponseStatus | undefined;
+  widgets: Widget[];
+}
+
+/**
+ * The ONLY message in this protocol answerable with no `authorization` at
+ * all — the gateway calls this on behalf of an anonymous widget visitor
+ * who has no session. Must never act as an existence/enumeration oracle:
+ * an unknown, disabled, or deleted widget_id all return the exact same
+ * { enabled: false, devices: [] } shape. owner_identity_key is consumed
+ * only by the gateway internally (to find live device sockets and seal
+ * the room key) — it is never relayed onward to the visitor.
+ */
+export interface GetWidgetInfo {
+  widgetId: string;
+}
+
+export interface GetWidgetInfoResponse {
+  status: ResponseStatus | undefined;
+  enabled: boolean;
+  ownerIdentityKey: string;
+  devices: Device[];
+}
+
+/**
+ * Anonymous visitor -> gateway: addresses a widget, never an identity
+ * directly. sym_key is generated client-side by the visitor; the gateway
+ * sees it in plaintext for only as long as it takes to seal it per-device
+ * via encryptSymKeyForDevices (the same thing it already does for normal
+ * chat key distribution — this is not a new exception to any rule).
+ * first_message_payload is the visitor's first message, already encrypted
+ * with sym_key in the same envelope shape as a normal RELAY_TEXT payload —
+ * the gateway only ever carries it, never decrypts it. No room is created
+ * just by opening the widget; this message (and the room it creates) only
+ * ever exists because the visitor actually sent something.
+ */
+export interface CreateVisitorRoom {
+  widgetId: string;
+  symKey: Uint8Array;
+  visitorLabel: string;
+  firstMessagePayload: Uint8Array;
+}
+
+export interface CreateVisitorRoomResponse {
+  status: ResponseStatus | undefined;
+  roomToken: string;
+}
+
+/**
+ * Server -> client push, sent to every open device socket of the widget's
+ * resolved owner. sealed_key_by_device carries one sealed copy of sym_key
+ * per device (each device decrypts with its own private key); widget_id
+ * lets the owner's UI show which widget the conversation came in on
+ * without duplicating its name into every event.
+ */
+export interface SealedKeyForDevice {
+  ciphertext: string;
+  nonce: string;
+  ephemeralPubkey: string;
+}
+
+export interface VisitorRoomRequestedEvent {
+  roomToken: string;
+  widgetId: string;
+  visitorLabel: string;
+  origin: string;
+  ts: number;
+  sealedKeyByDevice: { [key: string]: SealedKeyForDevice };
+  firstMessagePayload: Uint8Array;
+}
+
+export interface VisitorRoomRequestedEvent_SealedKeyByDeviceEntry {
+  key: string;
+  value: SealedKeyForDevice | undefined;
+}
+
+/**
+ * Pushed to the visitor if a room they created is never claimed (the
+ * owner had a device online at creation time but it disconnected before
+ * joining — the common "owner offline" case is rejected synchronously,
+ * before any room exists, so this only covers that rarer race).
+ */
+export interface VisitorRoomTimedOutEvent {
+  roomToken: string;
 }
 
 export interface SetChatMode {
@@ -352,6 +651,16 @@ export interface ServerMessage {
   acceptGroupInviteResponse?: AcceptGroupInviteResponse | undefined;
   declineGroupInviteResponse?: DeclineGroupInviteResponse | undefined;
   groupInviteReceived?: GroupInviteReceivedEvent | undefined;
+  createEphemeralRoomResponse?: CreateEphemeralRoomResponse | undefined;
+  relayMessage?: RelayMessage | undefined;
+  createWidgetResponse?: CreateWidgetResponse | undefined;
+  deleteWidgetResponse?: DeleteWidgetResponse | undefined;
+  updateWidgetResponse?: UpdateWidgetResponse | undefined;
+  listWidgetsResponse?: ListWidgetsResponse | undefined;
+  getWidgetInfoResponse?: GetWidgetInfoResponse | undefined;
+  createVisitorRoomResponse?: CreateVisitorRoomResponse | undefined;
+  visitorRoomRequestedEvent?: VisitorRoomRequestedEvent | undefined;
+  visitorRoomTimedOutEvent?: VisitorRoomTimedOutEvent | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -1608,6 +1917,14 @@ function createBaseClientMessage(): ClientMessage {
     checkBlocked: undefined,
     acceptGroupInvite: undefined,
     declineGroupInvite: undefined,
+    createEphemeralRoom: undefined,
+    relayMessage: undefined,
+    createWidget: undefined,
+    deleteWidget: undefined,
+    updateWidget: undefined,
+    listWidgets: undefined,
+    getWidgetInfo: undefined,
+    createVisitorRoom: undefined,
   };
 }
 
@@ -1729,6 +2046,30 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.declineGroupInvite !== undefined) {
       DeclineGroupInvite.encode(message.declineGroupInvite, writer.uint32(322).fork()).join();
+    }
+    if (message.createEphemeralRoom !== undefined) {
+      CreateEphemeralRoom.encode(message.createEphemeralRoom, writer.uint32(330).fork()).join();
+    }
+    if (message.relayMessage !== undefined) {
+      RelayMessage.encode(message.relayMessage, writer.uint32(338).fork()).join();
+    }
+    if (message.createWidget !== undefined) {
+      CreateWidget.encode(message.createWidget, writer.uint32(346).fork()).join();
+    }
+    if (message.deleteWidget !== undefined) {
+      DeleteWidget.encode(message.deleteWidget, writer.uint32(354).fork()).join();
+    }
+    if (message.updateWidget !== undefined) {
+      UpdateWidget.encode(message.updateWidget, writer.uint32(362).fork()).join();
+    }
+    if (message.listWidgets !== undefined) {
+      ListWidgets.encode(message.listWidgets, writer.uint32(370).fork()).join();
+    }
+    if (message.getWidgetInfo !== undefined) {
+      GetWidgetInfo.encode(message.getWidgetInfo, writer.uint32(378).fork()).join();
+    }
+    if (message.createVisitorRoom !== undefined) {
+      CreateVisitorRoom.encode(message.createVisitorRoom, writer.uint32(386).fork()).join();
     }
     return writer;
   },
@@ -2052,6 +2393,70 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.declineGroupInvite = DeclineGroupInvite.decode(reader, reader.uint32());
           continue;
         }
+        case 41: {
+          if (tag !== 330) {
+            break;
+          }
+
+          message.createEphemeralRoom = CreateEphemeralRoom.decode(reader, reader.uint32());
+          continue;
+        }
+        case 42: {
+          if (tag !== 338) {
+            break;
+          }
+
+          message.relayMessage = RelayMessage.decode(reader, reader.uint32());
+          continue;
+        }
+        case 43: {
+          if (tag !== 346) {
+            break;
+          }
+
+          message.createWidget = CreateWidget.decode(reader, reader.uint32());
+          continue;
+        }
+        case 44: {
+          if (tag !== 354) {
+            break;
+          }
+
+          message.deleteWidget = DeleteWidget.decode(reader, reader.uint32());
+          continue;
+        }
+        case 45: {
+          if (tag !== 362) {
+            break;
+          }
+
+          message.updateWidget = UpdateWidget.decode(reader, reader.uint32());
+          continue;
+        }
+        case 46: {
+          if (tag !== 370) {
+            break;
+          }
+
+          message.listWidgets = ListWidgets.decode(reader, reader.uint32());
+          continue;
+        }
+        case 47: {
+          if (tag !== 378) {
+            break;
+          }
+
+          message.getWidgetInfo = GetWidgetInfo.decode(reader, reader.uint32());
+          continue;
+        }
+        case 48: {
+          if (tag !== 386) {
+            break;
+          }
+
+          message.createVisitorRoom = CreateVisitorRoom.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2246,6 +2651,46 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.decline_group_invite)
         ? DeclineGroupInvite.fromJSON(object.decline_group_invite)
         : undefined,
+      createEphemeralRoom: isSet(object.createEphemeralRoom)
+        ? CreateEphemeralRoom.fromJSON(object.createEphemeralRoom)
+        : isSet(object.create_ephemeral_room)
+        ? CreateEphemeralRoom.fromJSON(object.create_ephemeral_room)
+        : undefined,
+      relayMessage: isSet(object.relayMessage)
+        ? RelayMessage.fromJSON(object.relayMessage)
+        : isSet(object.relay_message)
+        ? RelayMessage.fromJSON(object.relay_message)
+        : undefined,
+      createWidget: isSet(object.createWidget)
+        ? CreateWidget.fromJSON(object.createWidget)
+        : isSet(object.create_widget)
+        ? CreateWidget.fromJSON(object.create_widget)
+        : undefined,
+      deleteWidget: isSet(object.deleteWidget)
+        ? DeleteWidget.fromJSON(object.deleteWidget)
+        : isSet(object.delete_widget)
+        ? DeleteWidget.fromJSON(object.delete_widget)
+        : undefined,
+      updateWidget: isSet(object.updateWidget)
+        ? UpdateWidget.fromJSON(object.updateWidget)
+        : isSet(object.update_widget)
+        ? UpdateWidget.fromJSON(object.update_widget)
+        : undefined,
+      listWidgets: isSet(object.listWidgets)
+        ? ListWidgets.fromJSON(object.listWidgets)
+        : isSet(object.list_widgets)
+        ? ListWidgets.fromJSON(object.list_widgets)
+        : undefined,
+      getWidgetInfo: isSet(object.getWidgetInfo)
+        ? GetWidgetInfo.fromJSON(object.getWidgetInfo)
+        : isSet(object.get_widget_info)
+        ? GetWidgetInfo.fromJSON(object.get_widget_info)
+        : undefined,
+      createVisitorRoom: isSet(object.createVisitorRoom)
+        ? CreateVisitorRoom.fromJSON(object.createVisitorRoom)
+        : isSet(object.create_visitor_room)
+        ? CreateVisitorRoom.fromJSON(object.create_visitor_room)
+        : undefined,
     };
   },
 
@@ -2367,6 +2812,30 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.declineGroupInvite !== undefined) {
       obj.declineGroupInvite = DeclineGroupInvite.toJSON(message.declineGroupInvite);
+    }
+    if (message.createEphemeralRoom !== undefined) {
+      obj.createEphemeralRoom = CreateEphemeralRoom.toJSON(message.createEphemeralRoom);
+    }
+    if (message.relayMessage !== undefined) {
+      obj.relayMessage = RelayMessage.toJSON(message.relayMessage);
+    }
+    if (message.createWidget !== undefined) {
+      obj.createWidget = CreateWidget.toJSON(message.createWidget);
+    }
+    if (message.deleteWidget !== undefined) {
+      obj.deleteWidget = DeleteWidget.toJSON(message.deleteWidget);
+    }
+    if (message.updateWidget !== undefined) {
+      obj.updateWidget = UpdateWidget.toJSON(message.updateWidget);
+    }
+    if (message.listWidgets !== undefined) {
+      obj.listWidgets = ListWidgets.toJSON(message.listWidgets);
+    }
+    if (message.getWidgetInfo !== undefined) {
+      obj.getWidgetInfo = GetWidgetInfo.toJSON(message.getWidgetInfo);
+    }
+    if (message.createVisitorRoom !== undefined) {
+      obj.createVisitorRoom = CreateVisitorRoom.toJSON(message.createVisitorRoom);
     }
     return obj;
   },
@@ -2490,6 +2959,1814 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     message.declineGroupInvite = (object.declineGroupInvite !== undefined && object.declineGroupInvite !== null)
       ? DeclineGroupInvite.fromPartial(object.declineGroupInvite)
       : undefined;
+    message.createEphemeralRoom = (object.createEphemeralRoom !== undefined && object.createEphemeralRoom !== null)
+      ? CreateEphemeralRoom.fromPartial(object.createEphemeralRoom)
+      : undefined;
+    message.relayMessage = (object.relayMessage !== undefined && object.relayMessage !== null)
+      ? RelayMessage.fromPartial(object.relayMessage)
+      : undefined;
+    message.createWidget = (object.createWidget !== undefined && object.createWidget !== null)
+      ? CreateWidget.fromPartial(object.createWidget)
+      : undefined;
+    message.deleteWidget = (object.deleteWidget !== undefined && object.deleteWidget !== null)
+      ? DeleteWidget.fromPartial(object.deleteWidget)
+      : undefined;
+    message.updateWidget = (object.updateWidget !== undefined && object.updateWidget !== null)
+      ? UpdateWidget.fromPartial(object.updateWidget)
+      : undefined;
+    message.listWidgets = (object.listWidgets !== undefined && object.listWidgets !== null)
+      ? ListWidgets.fromPartial(object.listWidgets)
+      : undefined;
+    message.getWidgetInfo = (object.getWidgetInfo !== undefined && object.getWidgetInfo !== null)
+      ? GetWidgetInfo.fromPartial(object.getWidgetInfo)
+      : undefined;
+    message.createVisitorRoom = (object.createVisitorRoom !== undefined && object.createVisitorRoom !== null)
+      ? CreateVisitorRoom.fromPartial(object.createVisitorRoom)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseCreateEphemeralRoom(): CreateEphemeralRoom {
+  return {};
+}
+
+export const CreateEphemeralRoom: MessageFns<CreateEphemeralRoom> = {
+  encode(_: CreateEphemeralRoom, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateEphemeralRoom {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateEphemeralRoom();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): CreateEphemeralRoom {
+    return {};
+  },
+
+  toJSON(_: CreateEphemeralRoom): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CreateEphemeralRoom>, I>>(base?: I): CreateEphemeralRoom {
+    return CreateEphemeralRoom.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CreateEphemeralRoom>, I>>(_: I): CreateEphemeralRoom {
+    const message = createBaseCreateEphemeralRoom();
+    return message;
+  },
+};
+
+function createBaseCreateEphemeralRoomResponse(): CreateEphemeralRoomResponse {
+  return { status: undefined, roomToken: "" };
+}
+
+export const CreateEphemeralRoomResponse: MessageFns<CreateEphemeralRoomResponse> = {
+  encode(message: CreateEphemeralRoomResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.roomToken !== "") {
+      writer.uint32(18).string(message.roomToken);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateEphemeralRoomResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateEphemeralRoomResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateEphemeralRoomResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+    };
+  },
+
+  toJSON(message: CreateEphemeralRoomResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CreateEphemeralRoomResponse>, I>>(base?: I): CreateEphemeralRoomResponse {
+    return CreateEphemeralRoomResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CreateEphemeralRoomResponse>, I>>(object: I): CreateEphemeralRoomResponse {
+    const message = createBaseCreateEphemeralRoomResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.roomToken = object.roomToken ?? "";
+    return message;
+  },
+};
+
+function createBaseRelayMessage(): RelayMessage {
+  return { roomToken: "", kind: 0, payload: new Uint8Array(0) };
+}
+
+export const RelayMessage: MessageFns<RelayMessage> = {
+  encode(message: RelayMessage, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.roomToken !== "") {
+      writer.uint32(10).string(message.roomToken);
+    }
+    if (message.kind !== 0) {
+      writer.uint32(16).int32(message.kind);
+    }
+    if (message.payload.length !== 0) {
+      writer.uint32(26).bytes(message.payload);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RelayMessage {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRelayMessage();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.kind = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.payload = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RelayMessage {
+    return {
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+      kind: isSet(object.kind) ? relayMessageKindFromJSON(object.kind) : 0,
+      payload: isSet(object.payload) ? bytesFromBase64(object.payload) : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: RelayMessage): unknown {
+    const obj: any = {};
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    if (message.kind !== 0) {
+      obj.kind = relayMessageKindToJSON(message.kind);
+    }
+    if (message.payload.length !== 0) {
+      obj.payload = base64FromBytes(message.payload);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<RelayMessage>, I>>(base?: I): RelayMessage {
+    return RelayMessage.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RelayMessage>, I>>(object: I): RelayMessage {
+    const message = createBaseRelayMessage();
+    message.roomToken = object.roomToken ?? "";
+    message.kind = object.kind ?? 0;
+    message.payload = object.payload ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseWidget(): Widget {
+  return { widgetId: "", name: "", enabled: false, deleted: false, widgetVersion: 0, createdAt: 0 };
+}
+
+export const Widget: MessageFns<Widget> = {
+  encode(message: Widget, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    if (message.enabled !== false) {
+      writer.uint32(24).bool(message.enabled);
+    }
+    if (message.deleted !== false) {
+      writer.uint32(32).bool(message.deleted);
+    }
+    if (message.widgetVersion !== 0) {
+      writer.uint32(40).int64(message.widgetVersion);
+    }
+    if (message.createdAt !== 0) {
+      writer.uint32(48).int64(message.createdAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): Widget {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWidget();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.enabled = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.deleted = reader.bool();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.widgetVersion = longToNumber(reader.int64());
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.createdAt = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): Widget {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      enabled: isSet(object.enabled) ? globalThis.Boolean(object.enabled) : false,
+      deleted: isSet(object.deleted) ? globalThis.Boolean(object.deleted) : false,
+      widgetVersion: isSet(object.widgetVersion)
+        ? globalThis.Number(object.widgetVersion)
+        : isSet(object.widget_version)
+        ? globalThis.Number(object.widget_version)
+        : 0,
+      createdAt: isSet(object.createdAt)
+        ? globalThis.Number(object.createdAt)
+        : isSet(object.created_at)
+        ? globalThis.Number(object.created_at)
+        : 0,
+    };
+  },
+
+  toJSON(message: Widget): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.enabled !== false) {
+      obj.enabled = message.enabled;
+    }
+    if (message.deleted !== false) {
+      obj.deleted = message.deleted;
+    }
+    if (message.widgetVersion !== 0) {
+      obj.widgetVersion = Math.round(message.widgetVersion);
+    }
+    if (message.createdAt !== 0) {
+      obj.createdAt = Math.round(message.createdAt);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<Widget>, I>>(base?: I): Widget {
+    return Widget.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<Widget>, I>>(object: I): Widget {
+    const message = createBaseWidget();
+    message.widgetId = object.widgetId ?? "";
+    message.name = object.name ?? "";
+    message.enabled = object.enabled ?? false;
+    message.deleted = object.deleted ?? false;
+    message.widgetVersion = object.widgetVersion ?? 0;
+    message.createdAt = object.createdAt ?? 0;
+    return message;
+  },
+};
+
+function createBaseCreateWidget(): CreateWidget {
+  return { name: "" };
+}
+
+export const CreateWidget: MessageFns<CreateWidget> = {
+  encode(message: CreateWidget, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateWidget {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateWidget();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateWidget {
+    return { name: isSet(object.name) ? globalThis.String(object.name) : "" };
+  },
+
+  toJSON(message: CreateWidget): unknown {
+    const obj: any = {};
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CreateWidget>, I>>(base?: I): CreateWidget {
+    return CreateWidget.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CreateWidget>, I>>(object: I): CreateWidget {
+    const message = createBaseCreateWidget();
+    message.name = object.name ?? "";
+    return message;
+  },
+};
+
+function createBaseCreateWidgetResponse(): CreateWidgetResponse {
+  return { status: undefined, widget: undefined };
+}
+
+export const CreateWidgetResponse: MessageFns<CreateWidgetResponse> = {
+  encode(message: CreateWidgetResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.widget !== undefined) {
+      Widget.encode(message.widget, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateWidgetResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateWidgetResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.widget = Widget.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateWidgetResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      widget: isSet(object.widget) ? Widget.fromJSON(object.widget) : undefined,
+    };
+  },
+
+  toJSON(message: CreateWidgetResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.widget !== undefined) {
+      obj.widget = Widget.toJSON(message.widget);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CreateWidgetResponse>, I>>(base?: I): CreateWidgetResponse {
+    return CreateWidgetResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CreateWidgetResponse>, I>>(object: I): CreateWidgetResponse {
+    const message = createBaseCreateWidgetResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.widget = (object.widget !== undefined && object.widget !== null)
+      ? Widget.fromPartial(object.widget)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseDeleteWidget(): DeleteWidget {
+  return { widgetId: "" };
+}
+
+export const DeleteWidget: MessageFns<DeleteWidget> = {
+  encode(message: DeleteWidget, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteWidget {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteWidget();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeleteWidget {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+    };
+  },
+
+  toJSON(message: DeleteWidget): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeleteWidget>, I>>(base?: I): DeleteWidget {
+    return DeleteWidget.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeleteWidget>, I>>(object: I): DeleteWidget {
+    const message = createBaseDeleteWidget();
+    message.widgetId = object.widgetId ?? "";
+    return message;
+  },
+};
+
+function createBaseDeleteWidgetResponse(): DeleteWidgetResponse {
+  return { status: undefined, widgetId: "" };
+}
+
+export const DeleteWidgetResponse: MessageFns<DeleteWidgetResponse> = {
+  encode(message: DeleteWidgetResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.widgetId !== "") {
+      writer.uint32(18).string(message.widgetId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeleteWidgetResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeleteWidgetResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeleteWidgetResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+    };
+  },
+
+  toJSON(message: DeleteWidgetResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeleteWidgetResponse>, I>>(base?: I): DeleteWidgetResponse {
+    return DeleteWidgetResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeleteWidgetResponse>, I>>(object: I): DeleteWidgetResponse {
+    const message = createBaseDeleteWidgetResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.widgetId = object.widgetId ?? "";
+    return message;
+  },
+};
+
+function createBaseUpdateWidget(): UpdateWidget {
+  return { widgetId: "", enabled: undefined };
+}
+
+export const UpdateWidget: MessageFns<UpdateWidget> = {
+  encode(message: UpdateWidget, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    if (message.enabled !== undefined) {
+      writer.uint32(16).bool(message.enabled);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdateWidget {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdateWidget();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.enabled = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdateWidget {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+      enabled: isSet(object.enabled) ? globalThis.Boolean(object.enabled) : undefined,
+    };
+  },
+
+  toJSON(message: UpdateWidget): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    if (message.enabled !== undefined) {
+      obj.enabled = message.enabled;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UpdateWidget>, I>>(base?: I): UpdateWidget {
+    return UpdateWidget.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UpdateWidget>, I>>(object: I): UpdateWidget {
+    const message = createBaseUpdateWidget();
+    message.widgetId = object.widgetId ?? "";
+    message.enabled = object.enabled ?? undefined;
+    return message;
+  },
+};
+
+function createBaseUpdateWidgetResponse(): UpdateWidgetResponse {
+  return { status: undefined, widget: undefined };
+}
+
+export const UpdateWidgetResponse: MessageFns<UpdateWidgetResponse> = {
+  encode(message: UpdateWidgetResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.widget !== undefined) {
+      Widget.encode(message.widget, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdateWidgetResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdateWidgetResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.widget = Widget.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdateWidgetResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      widget: isSet(object.widget) ? Widget.fromJSON(object.widget) : undefined,
+    };
+  },
+
+  toJSON(message: UpdateWidgetResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.widget !== undefined) {
+      obj.widget = Widget.toJSON(message.widget);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UpdateWidgetResponse>, I>>(base?: I): UpdateWidgetResponse {
+    return UpdateWidgetResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UpdateWidgetResponse>, I>>(object: I): UpdateWidgetResponse {
+    const message = createBaseUpdateWidgetResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.widget = (object.widget !== undefined && object.widget !== null)
+      ? Widget.fromPartial(object.widget)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseListWidgets(): ListWidgets {
+  return {};
+}
+
+export const ListWidgets: MessageFns<ListWidgets> = {
+  encode(_: ListWidgets, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListWidgets {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListWidgets();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): ListWidgets {
+    return {};
+  },
+
+  toJSON(_: ListWidgets): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListWidgets>, I>>(base?: I): ListWidgets {
+    return ListWidgets.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListWidgets>, I>>(_: I): ListWidgets {
+    const message = createBaseListWidgets();
+    return message;
+  },
+};
+
+function createBaseListWidgetsResponse(): ListWidgetsResponse {
+  return { status: undefined, widgets: [] };
+}
+
+export const ListWidgetsResponse: MessageFns<ListWidgetsResponse> = {
+  encode(message: ListWidgetsResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    for (const v of message.widgets) {
+      Widget.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListWidgetsResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListWidgetsResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.widgets.push(Widget.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListWidgetsResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      widgets: globalThis.Array.isArray(object?.widgets) ? object.widgets.map((e: any) => Widget.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: ListWidgetsResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.widgets?.length) {
+      obj.widgets = message.widgets.map((e) => Widget.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListWidgetsResponse>, I>>(base?: I): ListWidgetsResponse {
+    return ListWidgetsResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListWidgetsResponse>, I>>(object: I): ListWidgetsResponse {
+    const message = createBaseListWidgetsResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.widgets = object.widgets?.map((e) => Widget.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseGetWidgetInfo(): GetWidgetInfo {
+  return { widgetId: "" };
+}
+
+export const GetWidgetInfo: MessageFns<GetWidgetInfo> = {
+  encode(message: GetWidgetInfo, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetWidgetInfo {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetWidgetInfo();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetWidgetInfo {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+    };
+  },
+
+  toJSON(message: GetWidgetInfo): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetWidgetInfo>, I>>(base?: I): GetWidgetInfo {
+    return GetWidgetInfo.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetWidgetInfo>, I>>(object: I): GetWidgetInfo {
+    const message = createBaseGetWidgetInfo();
+    message.widgetId = object.widgetId ?? "";
+    return message;
+  },
+};
+
+function createBaseGetWidgetInfoResponse(): GetWidgetInfoResponse {
+  return { status: undefined, enabled: false, ownerIdentityKey: "", devices: [] };
+}
+
+export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
+  encode(message: GetWidgetInfoResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.enabled !== false) {
+      writer.uint32(16).bool(message.enabled);
+    }
+    if (message.ownerIdentityKey !== "") {
+      writer.uint32(26).string(message.ownerIdentityKey);
+    }
+    for (const v of message.devices) {
+      Device.encode(v!, writer.uint32(34).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): GetWidgetInfoResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseGetWidgetInfoResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.enabled = reader.bool();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.ownerIdentityKey = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.devices.push(Device.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): GetWidgetInfoResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      enabled: isSet(object.enabled) ? globalThis.Boolean(object.enabled) : false,
+      ownerIdentityKey: isSet(object.ownerIdentityKey)
+        ? globalThis.String(object.ownerIdentityKey)
+        : isSet(object.owner_identity_key)
+        ? globalThis.String(object.owner_identity_key)
+        : "",
+      devices: globalThis.Array.isArray(object?.devices) ? object.devices.map((e: any) => Device.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: GetWidgetInfoResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.enabled !== false) {
+      obj.enabled = message.enabled;
+    }
+    if (message.ownerIdentityKey !== "") {
+      obj.ownerIdentityKey = message.ownerIdentityKey;
+    }
+    if (message.devices?.length) {
+      obj.devices = message.devices.map((e) => Device.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<GetWidgetInfoResponse>, I>>(base?: I): GetWidgetInfoResponse {
+    return GetWidgetInfoResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<GetWidgetInfoResponse>, I>>(object: I): GetWidgetInfoResponse {
+    const message = createBaseGetWidgetInfoResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.enabled = object.enabled ?? false;
+    message.ownerIdentityKey = object.ownerIdentityKey ?? "";
+    message.devices = object.devices?.map((e) => Device.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseCreateVisitorRoom(): CreateVisitorRoom {
+  return { widgetId: "", symKey: new Uint8Array(0), visitorLabel: "", firstMessagePayload: new Uint8Array(0) };
+}
+
+export const CreateVisitorRoom: MessageFns<CreateVisitorRoom> = {
+  encode(message: CreateVisitorRoom, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    if (message.symKey.length !== 0) {
+      writer.uint32(18).bytes(message.symKey);
+    }
+    if (message.visitorLabel !== "") {
+      writer.uint32(26).string(message.visitorLabel);
+    }
+    if (message.firstMessagePayload.length !== 0) {
+      writer.uint32(34).bytes(message.firstMessagePayload);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateVisitorRoom {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateVisitorRoom();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.symKey = reader.bytes();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.visitorLabel = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.firstMessagePayload = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateVisitorRoom {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+      symKey: isSet(object.symKey)
+        ? bytesFromBase64(object.symKey)
+        : isSet(object.sym_key)
+        ? bytesFromBase64(object.sym_key)
+        : new Uint8Array(0),
+      visitorLabel: isSet(object.visitorLabel)
+        ? globalThis.String(object.visitorLabel)
+        : isSet(object.visitor_label)
+        ? globalThis.String(object.visitor_label)
+        : "",
+      firstMessagePayload: isSet(object.firstMessagePayload)
+        ? bytesFromBase64(object.firstMessagePayload)
+        : isSet(object.first_message_payload)
+        ? bytesFromBase64(object.first_message_payload)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: CreateVisitorRoom): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    if (message.symKey.length !== 0) {
+      obj.symKey = base64FromBytes(message.symKey);
+    }
+    if (message.visitorLabel !== "") {
+      obj.visitorLabel = message.visitorLabel;
+    }
+    if (message.firstMessagePayload.length !== 0) {
+      obj.firstMessagePayload = base64FromBytes(message.firstMessagePayload);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CreateVisitorRoom>, I>>(base?: I): CreateVisitorRoom {
+    return CreateVisitorRoom.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CreateVisitorRoom>, I>>(object: I): CreateVisitorRoom {
+    const message = createBaseCreateVisitorRoom();
+    message.widgetId = object.widgetId ?? "";
+    message.symKey = object.symKey ?? new Uint8Array(0);
+    message.visitorLabel = object.visitorLabel ?? "";
+    message.firstMessagePayload = object.firstMessagePayload ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseCreateVisitorRoomResponse(): CreateVisitorRoomResponse {
+  return { status: undefined, roomToken: "" };
+}
+
+export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = {
+  encode(message: CreateVisitorRoomResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.roomToken !== "") {
+      writer.uint32(18).string(message.roomToken);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CreateVisitorRoomResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCreateVisitorRoomResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CreateVisitorRoomResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+    };
+  },
+
+  toJSON(message: CreateVisitorRoomResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CreateVisitorRoomResponse>, I>>(base?: I): CreateVisitorRoomResponse {
+    return CreateVisitorRoomResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CreateVisitorRoomResponse>, I>>(object: I): CreateVisitorRoomResponse {
+    const message = createBaseCreateVisitorRoomResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.roomToken = object.roomToken ?? "";
+    return message;
+  },
+};
+
+function createBaseSealedKeyForDevice(): SealedKeyForDevice {
+  return { ciphertext: "", nonce: "", ephemeralPubkey: "" };
+}
+
+export const SealedKeyForDevice: MessageFns<SealedKeyForDevice> = {
+  encode(message: SealedKeyForDevice, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.ciphertext !== "") {
+      writer.uint32(10).string(message.ciphertext);
+    }
+    if (message.nonce !== "") {
+      writer.uint32(18).string(message.nonce);
+    }
+    if (message.ephemeralPubkey !== "") {
+      writer.uint32(26).string(message.ephemeralPubkey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SealedKeyForDevice {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSealedKeyForDevice();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.ciphertext = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.nonce = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.ephemeralPubkey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SealedKeyForDevice {
+    return {
+      ciphertext: isSet(object.ciphertext) ? globalThis.String(object.ciphertext) : "",
+      nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "",
+      ephemeralPubkey: isSet(object.ephemeralPubkey)
+        ? globalThis.String(object.ephemeralPubkey)
+        : isSet(object.ephemeral_pubkey)
+        ? globalThis.String(object.ephemeral_pubkey)
+        : "",
+    };
+  },
+
+  toJSON(message: SealedKeyForDevice): unknown {
+    const obj: any = {};
+    if (message.ciphertext !== "") {
+      obj.ciphertext = message.ciphertext;
+    }
+    if (message.nonce !== "") {
+      obj.nonce = message.nonce;
+    }
+    if (message.ephemeralPubkey !== "") {
+      obj.ephemeralPubkey = message.ephemeralPubkey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SealedKeyForDevice>, I>>(base?: I): SealedKeyForDevice {
+    return SealedKeyForDevice.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SealedKeyForDevice>, I>>(object: I): SealedKeyForDevice {
+    const message = createBaseSealedKeyForDevice();
+    message.ciphertext = object.ciphertext ?? "";
+    message.nonce = object.nonce ?? "";
+    message.ephemeralPubkey = object.ephemeralPubkey ?? "";
+    return message;
+  },
+};
+
+function createBaseVisitorRoomRequestedEvent(): VisitorRoomRequestedEvent {
+  return {
+    roomToken: "",
+    widgetId: "",
+    visitorLabel: "",
+    origin: "",
+    ts: 0,
+    sealedKeyByDevice: {},
+    firstMessagePayload: new Uint8Array(0),
+  };
+}
+
+export const VisitorRoomRequestedEvent: MessageFns<VisitorRoomRequestedEvent> = {
+  encode(message: VisitorRoomRequestedEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.roomToken !== "") {
+      writer.uint32(10).string(message.roomToken);
+    }
+    if (message.widgetId !== "") {
+      writer.uint32(18).string(message.widgetId);
+    }
+    if (message.visitorLabel !== "") {
+      writer.uint32(26).string(message.visitorLabel);
+    }
+    if (message.origin !== "") {
+      writer.uint32(34).string(message.origin);
+    }
+    if (message.ts !== 0) {
+      writer.uint32(40).int64(message.ts);
+    }
+    globalThis.Object.entries(message.sealedKeyByDevice).forEach(([key, value]: [string, SealedKeyForDevice]) => {
+      VisitorRoomRequestedEvent_SealedKeyByDeviceEntry.encode({ key: key as any, value }, writer.uint32(50).fork())
+        .join();
+    });
+    if (message.firstMessagePayload.length !== 0) {
+      writer.uint32(58).bytes(message.firstMessagePayload);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): VisitorRoomRequestedEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseVisitorRoomRequestedEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.visitorLabel = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.origin = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.ts = longToNumber(reader.int64());
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          const entry6 = VisitorRoomRequestedEvent_SealedKeyByDeviceEntry.decode(reader, reader.uint32());
+          if (entry6.value !== undefined) {
+            message.sealedKeyByDevice[entry6.key] = entry6.value;
+          }
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.firstMessagePayload = reader.bytes();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): VisitorRoomRequestedEvent {
+    return {
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+      visitorLabel: isSet(object.visitorLabel)
+        ? globalThis.String(object.visitorLabel)
+        : isSet(object.visitor_label)
+        ? globalThis.String(object.visitor_label)
+        : "",
+      origin: isSet(object.origin) ? globalThis.String(object.origin) : "",
+      ts: isSet(object.ts) ? globalThis.Number(object.ts) : 0,
+      sealedKeyByDevice: isObject(object.sealedKeyByDevice)
+        ? (globalThis.Object.entries(object.sealedKeyByDevice) as [string, any][]).reduce(
+          (acc: { [key: string]: SealedKeyForDevice }, [key, value]: [string, any]) => {
+            acc[key] = SealedKeyForDevice.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : isObject(object.sealed_key_by_device)
+        ? (globalThis.Object.entries(object.sealed_key_by_device) as [string, any][]).reduce(
+          (acc: { [key: string]: SealedKeyForDevice }, [key, value]: [string, any]) => {
+            acc[key] = SealedKeyForDevice.fromJSON(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
+      firstMessagePayload: isSet(object.firstMessagePayload)
+        ? bytesFromBase64(object.firstMessagePayload)
+        : isSet(object.first_message_payload)
+        ? bytesFromBase64(object.first_message_payload)
+        : new Uint8Array(0),
+    };
+  },
+
+  toJSON(message: VisitorRoomRequestedEvent): unknown {
+    const obj: any = {};
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    if (message.visitorLabel !== "") {
+      obj.visitorLabel = message.visitorLabel;
+    }
+    if (message.origin !== "") {
+      obj.origin = message.origin;
+    }
+    if (message.ts !== 0) {
+      obj.ts = Math.round(message.ts);
+    }
+    if (message.sealedKeyByDevice) {
+      const entries = globalThis.Object.entries(message.sealedKeyByDevice) as [string, SealedKeyForDevice][];
+      if (entries.length > 0) {
+        obj.sealedKeyByDevice = {};
+        entries.forEach(([k, v]) => {
+          obj.sealedKeyByDevice[k] = SealedKeyForDevice.toJSON(v);
+        });
+      }
+    }
+    if (message.firstMessagePayload.length !== 0) {
+      obj.firstMessagePayload = base64FromBytes(message.firstMessagePayload);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<VisitorRoomRequestedEvent>, I>>(base?: I): VisitorRoomRequestedEvent {
+    return VisitorRoomRequestedEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<VisitorRoomRequestedEvent>, I>>(object: I): VisitorRoomRequestedEvent {
+    const message = createBaseVisitorRoomRequestedEvent();
+    message.roomToken = object.roomToken ?? "";
+    message.widgetId = object.widgetId ?? "";
+    message.visitorLabel = object.visitorLabel ?? "";
+    message.origin = object.origin ?? "";
+    message.ts = object.ts ?? 0;
+    message.sealedKeyByDevice =
+      (globalThis.Object.entries(object.sealedKeyByDevice ?? {}) as [string, SealedKeyForDevice][]).reduce(
+        (acc: { [key: string]: SealedKeyForDevice }, [key, value]: [string, SealedKeyForDevice]) => {
+          if (value !== undefined) {
+            acc[key] = SealedKeyForDevice.fromPartial(value);
+          }
+          return acc;
+        },
+        {},
+      );
+    message.firstMessagePayload = object.firstMessagePayload ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseVisitorRoomRequestedEvent_SealedKeyByDeviceEntry(): VisitorRoomRequestedEvent_SealedKeyByDeviceEntry {
+  return { key: "", value: undefined };
+}
+
+export const VisitorRoomRequestedEvent_SealedKeyByDeviceEntry: MessageFns<
+  VisitorRoomRequestedEvent_SealedKeyByDeviceEntry
+> = {
+  encode(
+    message: VisitorRoomRequestedEvent_SealedKeyByDeviceEntry,
+    writer: BinaryWriter = new BinaryWriter(),
+  ): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== undefined) {
+      SealedKeyForDevice.encode(message.value, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): VisitorRoomRequestedEvent_SealedKeyByDeviceEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseVisitorRoomRequestedEvent_SealedKeyByDeviceEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.value = SealedKeyForDevice.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): VisitorRoomRequestedEvent_SealedKeyByDeviceEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? SealedKeyForDevice.fromJSON(object.value) : undefined,
+    };
+  },
+
+  toJSON(message: VisitorRoomRequestedEvent_SealedKeyByDeviceEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== undefined) {
+      obj.value = SealedKeyForDevice.toJSON(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<VisitorRoomRequestedEvent_SealedKeyByDeviceEntry>, I>>(
+    base?: I,
+  ): VisitorRoomRequestedEvent_SealedKeyByDeviceEntry {
+    return VisitorRoomRequestedEvent_SealedKeyByDeviceEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<VisitorRoomRequestedEvent_SealedKeyByDeviceEntry>, I>>(
+    object: I,
+  ): VisitorRoomRequestedEvent_SealedKeyByDeviceEntry {
+    const message = createBaseVisitorRoomRequestedEvent_SealedKeyByDeviceEntry();
+    message.key = object.key ?? "";
+    message.value = (object.value !== undefined && object.value !== null)
+      ? SealedKeyForDevice.fromPartial(object.value)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseVisitorRoomTimedOutEvent(): VisitorRoomTimedOutEvent {
+  return { roomToken: "" };
+}
+
+export const VisitorRoomTimedOutEvent: MessageFns<VisitorRoomTimedOutEvent> = {
+  encode(message: VisitorRoomTimedOutEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.roomToken !== "") {
+      writer.uint32(10).string(message.roomToken);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): VisitorRoomTimedOutEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseVisitorRoomTimedOutEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): VisitorRoomTimedOutEvent {
+    return {
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+    };
+  },
+
+  toJSON(message: VisitorRoomTimedOutEvent): unknown {
+    const obj: any = {};
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<VisitorRoomTimedOutEvent>, I>>(base?: I): VisitorRoomTimedOutEvent {
+    return VisitorRoomTimedOutEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<VisitorRoomTimedOutEvent>, I>>(object: I): VisitorRoomTimedOutEvent {
+    const message = createBaseVisitorRoomTimedOutEvent();
+    message.roomToken = object.roomToken ?? "";
     return message;
   },
 };
@@ -4991,6 +7268,16 @@ function createBaseServerMessage(): ServerMessage {
     acceptGroupInviteResponse: undefined,
     declineGroupInviteResponse: undefined,
     groupInviteReceived: undefined,
+    createEphemeralRoomResponse: undefined,
+    relayMessage: undefined,
+    createWidgetResponse: undefined,
+    deleteWidgetResponse: undefined,
+    updateWidgetResponse: undefined,
+    listWidgetsResponse: undefined,
+    getWidgetInfoResponse: undefined,
+    createVisitorRoomResponse: undefined,
+    visitorRoomRequestedEvent: undefined,
+    visitorRoomTimedOutEvent: undefined,
   };
 }
 
@@ -5133,6 +7420,36 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.groupInviteReceived !== undefined) {
       GroupInviteReceivedEvent.encode(message.groupInviteReceived, writer.uint32(378).fork()).join();
+    }
+    if (message.createEphemeralRoomResponse !== undefined) {
+      CreateEphemeralRoomResponse.encode(message.createEphemeralRoomResponse, writer.uint32(386).fork()).join();
+    }
+    if (message.relayMessage !== undefined) {
+      RelayMessage.encode(message.relayMessage, writer.uint32(394).fork()).join();
+    }
+    if (message.createWidgetResponse !== undefined) {
+      CreateWidgetResponse.encode(message.createWidgetResponse, writer.uint32(402).fork()).join();
+    }
+    if (message.deleteWidgetResponse !== undefined) {
+      DeleteWidgetResponse.encode(message.deleteWidgetResponse, writer.uint32(410).fork()).join();
+    }
+    if (message.updateWidgetResponse !== undefined) {
+      UpdateWidgetResponse.encode(message.updateWidgetResponse, writer.uint32(418).fork()).join();
+    }
+    if (message.listWidgetsResponse !== undefined) {
+      ListWidgetsResponse.encode(message.listWidgetsResponse, writer.uint32(426).fork()).join();
+    }
+    if (message.getWidgetInfoResponse !== undefined) {
+      GetWidgetInfoResponse.encode(message.getWidgetInfoResponse, writer.uint32(434).fork()).join();
+    }
+    if (message.createVisitorRoomResponse !== undefined) {
+      CreateVisitorRoomResponse.encode(message.createVisitorRoomResponse, writer.uint32(442).fork()).join();
+    }
+    if (message.visitorRoomRequestedEvent !== undefined) {
+      VisitorRoomRequestedEvent.encode(message.visitorRoomRequestedEvent, writer.uint32(450).fork()).join();
+    }
+    if (message.visitorRoomTimedOutEvent !== undefined) {
+      VisitorRoomTimedOutEvent.encode(message.visitorRoomTimedOutEvent, writer.uint32(458).fork()).join();
     }
     return writer;
   },
@@ -5512,6 +7829,86 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.groupInviteReceived = GroupInviteReceivedEvent.decode(reader, reader.uint32());
           continue;
         }
+        case 48: {
+          if (tag !== 386) {
+            break;
+          }
+
+          message.createEphemeralRoomResponse = CreateEphemeralRoomResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 49: {
+          if (tag !== 394) {
+            break;
+          }
+
+          message.relayMessage = RelayMessage.decode(reader, reader.uint32());
+          continue;
+        }
+        case 50: {
+          if (tag !== 402) {
+            break;
+          }
+
+          message.createWidgetResponse = CreateWidgetResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 51: {
+          if (tag !== 410) {
+            break;
+          }
+
+          message.deleteWidgetResponse = DeleteWidgetResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 52: {
+          if (tag !== 418) {
+            break;
+          }
+
+          message.updateWidgetResponse = UpdateWidgetResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 53: {
+          if (tag !== 426) {
+            break;
+          }
+
+          message.listWidgetsResponse = ListWidgetsResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 54: {
+          if (tag !== 434) {
+            break;
+          }
+
+          message.getWidgetInfoResponse = GetWidgetInfoResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 55: {
+          if (tag !== 442) {
+            break;
+          }
+
+          message.createVisitorRoomResponse = CreateVisitorRoomResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 56: {
+          if (tag !== 450) {
+            break;
+          }
+
+          message.visitorRoomRequestedEvent = VisitorRoomRequestedEvent.decode(reader, reader.uint32());
+          continue;
+        }
+        case 57: {
+          if (tag !== 458) {
+            break;
+          }
+
+          message.visitorRoomTimedOutEvent = VisitorRoomTimedOutEvent.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -5741,6 +8138,56 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.group_invite_received)
         ? GroupInviteReceivedEvent.fromJSON(object.group_invite_received)
         : undefined,
+      createEphemeralRoomResponse: isSet(object.createEphemeralRoomResponse)
+        ? CreateEphemeralRoomResponse.fromJSON(object.createEphemeralRoomResponse)
+        : isSet(object.create_ephemeral_room_response)
+        ? CreateEphemeralRoomResponse.fromJSON(object.create_ephemeral_room_response)
+        : undefined,
+      relayMessage: isSet(object.relayMessage)
+        ? RelayMessage.fromJSON(object.relayMessage)
+        : isSet(object.relay_message)
+        ? RelayMessage.fromJSON(object.relay_message)
+        : undefined,
+      createWidgetResponse: isSet(object.createWidgetResponse)
+        ? CreateWidgetResponse.fromJSON(object.createWidgetResponse)
+        : isSet(object.create_widget_response)
+        ? CreateWidgetResponse.fromJSON(object.create_widget_response)
+        : undefined,
+      deleteWidgetResponse: isSet(object.deleteWidgetResponse)
+        ? DeleteWidgetResponse.fromJSON(object.deleteWidgetResponse)
+        : isSet(object.delete_widget_response)
+        ? DeleteWidgetResponse.fromJSON(object.delete_widget_response)
+        : undefined,
+      updateWidgetResponse: isSet(object.updateWidgetResponse)
+        ? UpdateWidgetResponse.fromJSON(object.updateWidgetResponse)
+        : isSet(object.update_widget_response)
+        ? UpdateWidgetResponse.fromJSON(object.update_widget_response)
+        : undefined,
+      listWidgetsResponse: isSet(object.listWidgetsResponse)
+        ? ListWidgetsResponse.fromJSON(object.listWidgetsResponse)
+        : isSet(object.list_widgets_response)
+        ? ListWidgetsResponse.fromJSON(object.list_widgets_response)
+        : undefined,
+      getWidgetInfoResponse: isSet(object.getWidgetInfoResponse)
+        ? GetWidgetInfoResponse.fromJSON(object.getWidgetInfoResponse)
+        : isSet(object.get_widget_info_response)
+        ? GetWidgetInfoResponse.fromJSON(object.get_widget_info_response)
+        : undefined,
+      createVisitorRoomResponse: isSet(object.createVisitorRoomResponse)
+        ? CreateVisitorRoomResponse.fromJSON(object.createVisitorRoomResponse)
+        : isSet(object.create_visitor_room_response)
+        ? CreateVisitorRoomResponse.fromJSON(object.create_visitor_room_response)
+        : undefined,
+      visitorRoomRequestedEvent: isSet(object.visitorRoomRequestedEvent)
+        ? VisitorRoomRequestedEvent.fromJSON(object.visitorRoomRequestedEvent)
+        : isSet(object.visitor_room_requested_event)
+        ? VisitorRoomRequestedEvent.fromJSON(object.visitor_room_requested_event)
+        : undefined,
+      visitorRoomTimedOutEvent: isSet(object.visitorRoomTimedOutEvent)
+        ? VisitorRoomTimedOutEvent.fromJSON(object.visitorRoomTimedOutEvent)
+        : isSet(object.visitor_room_timed_out_event)
+        ? VisitorRoomTimedOutEvent.fromJSON(object.visitor_room_timed_out_event)
+        : undefined,
     };
   },
 
@@ -5885,6 +8332,36 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.groupInviteReceived !== undefined) {
       obj.groupInviteReceived = GroupInviteReceivedEvent.toJSON(message.groupInviteReceived);
+    }
+    if (message.createEphemeralRoomResponse !== undefined) {
+      obj.createEphemeralRoomResponse = CreateEphemeralRoomResponse.toJSON(message.createEphemeralRoomResponse);
+    }
+    if (message.relayMessage !== undefined) {
+      obj.relayMessage = RelayMessage.toJSON(message.relayMessage);
+    }
+    if (message.createWidgetResponse !== undefined) {
+      obj.createWidgetResponse = CreateWidgetResponse.toJSON(message.createWidgetResponse);
+    }
+    if (message.deleteWidgetResponse !== undefined) {
+      obj.deleteWidgetResponse = DeleteWidgetResponse.toJSON(message.deleteWidgetResponse);
+    }
+    if (message.updateWidgetResponse !== undefined) {
+      obj.updateWidgetResponse = UpdateWidgetResponse.toJSON(message.updateWidgetResponse);
+    }
+    if (message.listWidgetsResponse !== undefined) {
+      obj.listWidgetsResponse = ListWidgetsResponse.toJSON(message.listWidgetsResponse);
+    }
+    if (message.getWidgetInfoResponse !== undefined) {
+      obj.getWidgetInfoResponse = GetWidgetInfoResponse.toJSON(message.getWidgetInfoResponse);
+    }
+    if (message.createVisitorRoomResponse !== undefined) {
+      obj.createVisitorRoomResponse = CreateVisitorRoomResponse.toJSON(message.createVisitorRoomResponse);
+    }
+    if (message.visitorRoomRequestedEvent !== undefined) {
+      obj.visitorRoomRequestedEvent = VisitorRoomRequestedEvent.toJSON(message.visitorRoomRequestedEvent);
+    }
+    if (message.visitorRoomTimedOutEvent !== undefined) {
+      obj.visitorRoomTimedOutEvent = VisitorRoomTimedOutEvent.toJSON(message.visitorRoomTimedOutEvent);
     }
     return obj;
   },
@@ -6052,6 +8529,41 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     message.groupInviteReceived = (object.groupInviteReceived !== undefined && object.groupInviteReceived !== null)
       ? GroupInviteReceivedEvent.fromPartial(object.groupInviteReceived)
       : undefined;
+    message.createEphemeralRoomResponse =
+      (object.createEphemeralRoomResponse !== undefined && object.createEphemeralRoomResponse !== null)
+        ? CreateEphemeralRoomResponse.fromPartial(object.createEphemeralRoomResponse)
+        : undefined;
+    message.relayMessage = (object.relayMessage !== undefined && object.relayMessage !== null)
+      ? RelayMessage.fromPartial(object.relayMessage)
+      : undefined;
+    message.createWidgetResponse = (object.createWidgetResponse !== undefined && object.createWidgetResponse !== null)
+      ? CreateWidgetResponse.fromPartial(object.createWidgetResponse)
+      : undefined;
+    message.deleteWidgetResponse = (object.deleteWidgetResponse !== undefined && object.deleteWidgetResponse !== null)
+      ? DeleteWidgetResponse.fromPartial(object.deleteWidgetResponse)
+      : undefined;
+    message.updateWidgetResponse = (object.updateWidgetResponse !== undefined && object.updateWidgetResponse !== null)
+      ? UpdateWidgetResponse.fromPartial(object.updateWidgetResponse)
+      : undefined;
+    message.listWidgetsResponse = (object.listWidgetsResponse !== undefined && object.listWidgetsResponse !== null)
+      ? ListWidgetsResponse.fromPartial(object.listWidgetsResponse)
+      : undefined;
+    message.getWidgetInfoResponse =
+      (object.getWidgetInfoResponse !== undefined && object.getWidgetInfoResponse !== null)
+        ? GetWidgetInfoResponse.fromPartial(object.getWidgetInfoResponse)
+        : undefined;
+    message.createVisitorRoomResponse =
+      (object.createVisitorRoomResponse !== undefined && object.createVisitorRoomResponse !== null)
+        ? CreateVisitorRoomResponse.fromPartial(object.createVisitorRoomResponse)
+        : undefined;
+    message.visitorRoomRequestedEvent =
+      (object.visitorRoomRequestedEvent !== undefined && object.visitorRoomRequestedEvent !== null)
+        ? VisitorRoomRequestedEvent.fromPartial(object.visitorRoomRequestedEvent)
+        : undefined;
+    message.visitorRoomTimedOutEvent =
+      (object.visitorRoomTimedOutEvent !== undefined && object.visitorRoomTimedOutEvent !== null)
+        ? VisitorRoomTimedOutEvent.fromPartial(object.visitorRoomTimedOutEvent)
+        : undefined;
     return message;
   },
 };

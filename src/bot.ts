@@ -5,9 +5,16 @@ import {
   EvergramMessageDeleted,
   EvergramMessageEdited,
   EvergramReaction,
+  EvergramVisitorMessage,
+  EvergramVisitorMessageDeleted,
+  EvergramVisitorMessageEdited,
+  EvergramVisitorReaction,
+  EvergramVisitorRoomRequested,
+  EvergramVisitorRoomTimedOut,
 } from "./core";
 import { ChatInfo, JoinRequestedEvent, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
 import { EvergramError } from "./errors";
+import { EphemeralEditEvent, EphemeralRemoveEvent, EphemeralTextEvent } from "./ephemeral-relay-session";
 
 export interface JoinRequestHandle extends JoinRequestedEvent {
   /** Adds the requester as a participant — the only accept path the protocol exposes today. */
@@ -36,10 +43,58 @@ export interface GroupInviteHandle extends PendingGroupInvite {
   deny(): Promise<unknown>;
 }
 
+// Widget-visitor chat — see [[evergram-sdk-relay-duplication]] memory.
+// Unlike JoinRequestHandle/ChatRequestHandle/GroupInviteHandle (one-shot
+// approve/deny), a visitor conversation is ongoing — this Handle is handed
+// to every onVisitor* callback for the same roomToken so a bot can keep
+// acting on it across the whole exchange, not just the opening request.
+export interface VisitorSessionHandle {
+  roomToken: string;
+  widgetId: string;
+  visitorLabel: string;
+  origin: string;
+  /** Reply in this conversation. sender defaults to this bot's own profile nickname. */
+  reply(text: string, sender?: string): EphemeralTextEvent;
+  react(msgId: string, emoji: string | null): void;
+  edit(msgId: string, text: string): EphemeralEditEvent;
+  remove(msgId: string): EphemeralRemoveEvent;
+  /** Permanently ends the conversation — the visitor can't reconnect into it afterward. */
+  end(): void;
+}
+
+function buildVisitorSessionHandle(
+  core: EvergramCore,
+  meta: { roomToken: string; widgetId: string; visitorLabel: string; origin: string }
+): VisitorSessionHandle {
+  return {
+    ...meta,
+    reply: (text, sender) => core.sendVisitorMessage(meta.roomToken, text, sender),
+    react: (msgId, emoji) => core.reactToVisitorMessage(meta.roomToken, msgId, emoji),
+    edit: (msgId, text) => core.editVisitorMessage(meta.roomToken, msgId, text),
+    remove: (msgId) => core.removeVisitorMessage(meta.roomToken, msgId),
+    end: () => core.endVisitorRoom(meta.roomToken),
+  };
+}
+
 type MessageHandler = (msg: EvergramChatMessage, chat: ChatInfo | undefined) => void | Promise<void>;
 type ReactionHandler = (reaction: EvergramReaction, chat: ChatInfo | undefined) => void | Promise<void>;
 type MessageEditedHandler = (edit: EvergramMessageEdited, chat: ChatInfo | undefined) => void | Promise<void>;
 type MessageDeletedHandler = (deletion: EvergramMessageDeleted, chat: ChatInfo | undefined) => void | Promise<void>;
+type VisitorRoomRequestedHandler = (
+  handle: VisitorSessionHandle,
+  firstMessage: EphemeralTextEvent | null
+) => void | Promise<void>;
+type VisitorMessageHandler = (msg: EvergramVisitorMessage, handle: VisitorSessionHandle | undefined) => void | Promise<void>;
+type VisitorReactionHandler = (reaction: EvergramVisitorReaction, handle: VisitorSessionHandle | undefined) => void | Promise<void>;
+type VisitorMessageEditedHandler = (
+  edit: EvergramVisitorMessageEdited,
+  handle: VisitorSessionHandle | undefined
+) => void | Promise<void>;
+type VisitorMessageDeletedHandler = (
+  deletion: EvergramVisitorMessageDeleted,
+  handle: VisitorSessionHandle | undefined
+) => void | Promise<void>;
+type VisitorRoomTimedOutHandler = (event: EvergramVisitorRoomTimedOut) => void | Promise<void>;
 type JoinRequestHandler = (req: JoinRequestHandle) => void | Promise<void>;
 type ChatRequestHandler = (req: ChatRequestHandle) => void | Promise<void>;
 type GroupInviteHandler = (req: GroupInviteHandle) => void | Promise<void>;
@@ -192,5 +247,77 @@ export class EvergramBot {
 
   reply(msg: EvergramChatMessage, text: string) {
     return this.core.sendMessage(msg.chatId, text);
+  }
+
+  // Fires once per anonymous widget visitor conversation, when they send
+  // their opening message. No replay-at-registration-time (unlike
+  // onChatRequest/onGroupInvite): visitor rooms have no contract-side
+  // "pending" list — a request missed while this bot was offline is
+  // simply gone, same as the webapp's behavior today.
+  onVisitorRoomRequested(handler: VisitorRoomRequestedHandler): () => void {
+    const wrapped = (event: EvergramVisitorRoomRequested) => {
+      const handle = buildVisitorSessionHandle(this.core, event);
+      Promise.resolve(handler(handle, event.firstMessage)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorRoomRequested", wrapped);
+    return () => this.core.off("visitorRoomRequested", wrapped);
+  }
+
+  onVisitorMessage(handler: VisitorMessageHandler): () => void {
+    const wrapped = (msg: EvergramVisitorMessage) => {
+      const meta = this.core.getVisitorSession(msg.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: msg.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(msg, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorMessage", wrapped);
+    return () => this.core.off("visitorMessage", wrapped);
+  }
+
+  onVisitorReaction(handler: VisitorReactionHandler): () => void {
+    const wrapped = (reaction: EvergramVisitorReaction) => {
+      const meta = this.core.getVisitorSession(reaction.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: reaction.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(reaction, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorReaction", wrapped);
+    return () => this.core.off("visitorReaction", wrapped);
+  }
+
+  onVisitorMessageEdited(handler: VisitorMessageEditedHandler): () => void {
+    const wrapped = (edit: EvergramVisitorMessageEdited) => {
+      const meta = this.core.getVisitorSession(edit.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: edit.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(edit, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorMessageEdited", wrapped);
+    return () => this.core.off("visitorMessageEdited", wrapped);
+  }
+
+  onVisitorMessageDeleted(handler: VisitorMessageDeletedHandler): () => void {
+    const wrapped = (deletion: EvergramVisitorMessageDeleted) => {
+      const meta = this.core.getVisitorSession(deletion.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: deletion.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(deletion, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorMessageDeleted", wrapped);
+    return () => this.core.off("visitorMessageDeleted", wrapped);
+  }
+
+  // Fires only in the rarer race where the widget owner had a device
+  // online at room-creation time but it disconnected before ever joining
+  // — the common "no device online" case is rejected synchronously to the
+  // visitor and this bot never even hears about that conversation.
+  onVisitorRoomTimedOut(handler: VisitorRoomTimedOutHandler): () => void {
+    const wrapped = (event: EvergramVisitorRoomTimedOut) => {
+      Promise.resolve(handler(event)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorRoomTimedOut", wrapped);
+    return () => this.core.off("visitorRoomTimedOut", wrapped);
   }
 }
