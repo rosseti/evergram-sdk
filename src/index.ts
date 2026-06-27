@@ -3,10 +3,14 @@ export type {
   EvergramCoreOptions,
   EvergramDevice,
   EvergramChatMessage,
+  EvergramReaction,
+  EvergramMessageEdited,
+  EvergramMessageDeleted,
   EvergramVisitorMessage,
   EvergramVisitorReaction,
   EvergramVisitorMessageEdited,
   EvergramVisitorMessageDeleted,
+  EvergramVisitorTyping,
   EvergramVisitorRoomRequested,
   EvergramVisitorStatusChanged,
   EvergramVisitorRoomTimedOut,
@@ -35,7 +39,13 @@ export type {
 export { buildPaymentRequest, buildPaymentReceipt, buildAudioMessage } from "./message-builders";
 
 export { EvergramBot } from "./bot";
-export type { JoinRequestHandle, EvergramBotOptions, VisitorSessionHandle } from "./bot";
+export type {
+  JoinRequestHandle,
+  ChatRequestHandle,
+  GroupInviteHandle,
+  EvergramBotOptions,
+  VisitorSessionHandle,
+} from "./bot";
 
 export { generateWallet, walletFromSeed, buildAuthChallenge, signAuthChallenge } from "./wallet";
 export type { EvergramWallet } from "./wallet";
@@ -54,6 +64,8 @@ export {
   EvergramValidationError,
   EvergramTimeoutError,
   EvergramConnectionError,
+  EvergramDeviceRevokedError,
+  EvergramRotationError,
 } from "./errors";
 
 export * from "./proto/evergram";

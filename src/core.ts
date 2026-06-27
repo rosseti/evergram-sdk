@@ -39,6 +39,7 @@ import {
   EphemeralRelayStatus,
   EphemeralRemoveEvent,
   EphemeralTextEvent,
+  EphemeralTypingEvent,
 } from "./ephemeral-relay-session";
 import { decodeRelayPayload, encodeRelayPayload, fromWireKind, RelayMessageKind, toWireKind } from "./relay-message-codec";
 
@@ -177,6 +178,10 @@ export interface EvergramVisitorMessageDeleted extends EphemeralRemoveEvent {
   roomToken: string;
 }
 
+export interface EvergramVisitorTyping extends EphemeralTypingEvent {
+  roomToken: string;
+}
+
 export interface EvergramVisitorRoomRequested {
   roomToken: string;
   widgetId: string;
@@ -221,8 +226,8 @@ export interface EvergramVisitorRoomTimedOut {
 // "restricted" (ReputationUpdated), "error" (Error),
 // "visitorRoomRequested" (EvergramVisitorRoomRequested), "visitorMessage" (EvergramVisitorMessage),
 // "visitorReaction" (EvergramVisitorReaction), "visitorMessageEdited" (EvergramVisitorMessageEdited),
-// "visitorMessageDeleted" (EvergramVisitorMessageDeleted), "visitorStatusChanged" (EvergramVisitorStatusChanged),
-// "visitorRoomTimedOut" (EvergramVisitorRoomTimedOut).
+// "visitorMessageDeleted" (EvergramVisitorMessageDeleted), "visitorTyping" (EvergramVisitorTyping),
+// "visitorStatusChanged" (EvergramVisitorStatusChanged), "visitorRoomTimedOut" (EvergramVisitorRoomTimedOut).
 export class EvergramCore extends EventEmitter {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
@@ -889,6 +894,10 @@ export class EvergramCore extends EventEmitter {
     return this.getVisitorSessionOrThrow(roomToken).session.removeMessage(msgId);
   }
 
+  sendVisitorTyping(roomToken: string, isTyping: boolean): void {
+    this.getVisitorSessionOrThrow(roomToken).session.sendTyping(isTyping);
+  }
+
   // Permanently closes the room (see ephemeralRoomRegistry.ts's endRoom on
   // the gateway) — unlike just disconnecting, the visitor is notified
   // immediately and can't reconnect into it afterward.
@@ -959,6 +968,7 @@ export class EvergramCore extends EventEmitter {
       onReaction: (e) => this.emit("visitorReaction", { roomToken, ...e }),
       onEdit: (e) => this.emit("visitorMessageEdited", { roomToken, ...e }),
       onRemove: (e) => this.emit("visitorMessageDeleted", { roomToken, ...e }),
+      onTyping: (e) => this.emit("visitorTyping", { roomToken, ...e }),
       onStatusChange: (status, statusMeta) => {
         // Mirrors endVisitorRoom's own cleanup for the self-initiated case
         // — "closed" can also arrive remotely (the visitor ending the

@@ -199,6 +199,14 @@ enum RelayMessageKind {
   // that one socket to give up locally instead of silently sitting in a
   // session it was never actually paired into.
   RELAY_CLAIMED_ELSEWHERE = 8;
+  // Sent by either side currently holding a slot in the room, mirroring
+  // TypingContent on the real per-chat Envelope (see handleTyping.ts on the
+  // gateway) — plaintext payload, JSON {isTyping: bool}, not nacl-encrypted
+  // like the content kinds above: typing liveness isn't message content,
+  // and the real chat already accepts the gateway seeing it in the clear.
+  // Relayed through the exact same opaque kind+payload path as every other
+  // frame (see relayMessage.ts) — no gateway changes needed to support it.
+  RELAY_TYPING = 9;
 }
 
 message RelayMessage {

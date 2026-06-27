@@ -29,6 +29,10 @@ export interface EphemeralRemoveEvent {
   removedAt: number;
 }
 
+export interface EphemeralTypingEvent {
+  isTyping: boolean;
+}
+
 // Builds the exact wire payload a RELAY_TEXT frame carries: encrypt the
 // {msgId, sender, text, ts} envelope with the room's symKey, then JSON-wrap
 // the {nonce, ciphertext} result. Exported (not just used internally by
@@ -59,6 +63,19 @@ function parsePeerLeftDeadline(payloadText: string): number | undefined {
     return payloadText ? JSON.parse(payloadText)?.deadlineAt : undefined;
   } catch {
     return undefined;
+  }
+}
+
+// Plaintext JSON, like parsePeerLeftDeadline above — RELAY_TYPING is
+// deliberately not nacl-encrypted (see its proto comment): typing liveness
+// isn't message content, and the real per-chat Envelope already lets the
+// gateway see isTyping in the clear.
+function parseTypingPayload(payloadText: string): EphemeralTypingEvent | null {
+  try {
+    const isTyping = JSON.parse(payloadText)?.isTyping;
+    return typeof isTyping === "boolean" ? { isTyping } : null;
+  } catch {
+    return null;
   }
 }
 
@@ -101,6 +118,7 @@ export interface EphemeralRelaySessionOptions {
   onReaction: (event: EphemeralReactEvent) => void;
   onEdit: (event: EphemeralEditEvent) => void;
   onRemove: (event: EphemeralRemoveEvent) => void;
+  onTyping: (event: EphemeralTypingEvent) => void;
   onStatusChange: (status: EphemeralRelayStatus, meta?: EphemeralStatusMeta) => void;
   // Fires on every frame seen (sent or received) with the new "this room
   // goes stale at" deadline — separate from peerLeftDeadline (which is
@@ -120,6 +138,12 @@ export interface EphemeralRelaySessionOptions {
 // sealed per-device and never sent to the gateway in the clear.
 export class EphemeralRelaySession {
   private readonly opts: EphemeralRelaySessionOptions;
+  // Mirrors evergram-client.ts's sendTyping/clearTyping debounce for the
+  // real chat: a "true" starts the signal and arms a 3s auto-stop timer
+  // that's refreshed (not re-sent) on every subsequent keystroke, so the
+  // wire only ever sees one "start" frame per burst of typing plus one
+  // "stop" frame, never a frame per keystroke.
+  private typingTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: EphemeralRelaySessionOptions) {
     this.opts = opts;
@@ -197,6 +221,12 @@ export class EphemeralRelaySession {
     if (kind === "remove") {
       const event = this.decrypt<EphemeralRemoveEvent>(payloadText);
       if (event) this.opts.onRemove(event);
+      return;
+    }
+
+    if (kind === "typing") {
+      const event = parseTypingPayload(payloadText);
+      if (event) this.opts.onTyping(event);
     }
   }
 
@@ -221,6 +251,31 @@ export class EphemeralRelaySession {
     const event: EphemeralRemoveEvent = { msgId, removedAt: Date.now() };
     this.encryptAndSend("remove", event);
     return event;
+  }
+
+  sendTyping(isTyping: boolean) {
+    if (isTyping) {
+      if (this.typingTimeout) {
+        clearTimeout(this.typingTimeout);
+      } else {
+        this.opts.sendFrame("typing", JSON.stringify({ isTyping: true }));
+        this.markActivity();
+      }
+
+      this.typingTimeout = setTimeout(() => this.clearTyping(), 3000);
+      return;
+    }
+
+    this.clearTyping();
+  }
+
+  private clearTyping() {
+    if (!this.typingTimeout) return;
+
+    clearTimeout(this.typingTimeout);
+    this.typingTimeout = null;
+    this.opts.sendFrame("typing", JSON.stringify({ isTyping: false }));
+    this.markActivity();
   }
 
   // Either side may call this — the gateway honors it from whoever

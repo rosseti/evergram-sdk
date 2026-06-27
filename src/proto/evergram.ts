@@ -110,6 +110,16 @@ export enum RelayMessageKind {
    * session it was never actually paired into.
    */
   RELAY_CLAIMED_ELSEWHERE = 8,
+  /**
+   * RELAY_TYPING - Sent by either side currently holding a slot in the room, mirroring
+   * TypingContent on the real per-chat Envelope (see handleTyping.ts on the
+   * gateway) — plaintext payload, JSON {isTyping: bool}, not nacl-encrypted
+   * like the content kinds above: typing liveness isn't message content,
+   * and the real chat already accepts the gateway seeing it in the clear.
+   * Relayed through the exact same opaque kind+payload path as every other
+   * frame (see relayMessage.ts) — no gateway changes needed to support it.
+   */
+  RELAY_TYPING = 9,
   UNRECOGNIZED = -1,
 }
 
@@ -142,6 +152,9 @@ export function relayMessageKindFromJSON(object: any): RelayMessageKind {
     case 8:
     case "RELAY_CLAIMED_ELSEWHERE":
       return RelayMessageKind.RELAY_CLAIMED_ELSEWHERE;
+    case 9:
+    case "RELAY_TYPING":
+      return RelayMessageKind.RELAY_TYPING;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -169,6 +182,8 @@ export function relayMessageKindToJSON(object: RelayMessageKind): string {
       return "RELAY_END";
     case RelayMessageKind.RELAY_CLAIMED_ELSEWHERE:
       return "RELAY_CLAIMED_ELSEWHERE";
+    case RelayMessageKind.RELAY_TYPING:
+      return "RELAY_TYPING";
     case RelayMessageKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";

@@ -2,7 +2,9 @@
 
 Headless SDK for building bots and programmatic integrations on the Evergram
 protocol — direct XRPL wallet-signature authentication (no Xaman app needed),
-end-to-end encrypted messaging, group management, and Discovery.
+end-to-end encrypted messaging (including reactions, edit, and delete), chat
+key rotation, embeddable-widget management, anonymous widget-visitor chat,
+group management, and Discovery.
 
 > **Status: not yet ready for public release.** The wallet-signature auth
 > path this SDK depends on is new and is the first 100%-programmatic
@@ -154,18 +156,32 @@ trusted with what.
 `EvergramCore` only ever receives the *sealed* key
 (`chat.symKeyEncrypted[yourIdentityKey].devices[yourDeviceId]`) and opens it
 locally with your device's private key (`crypto.ts#openSealedSymKey`) — the
-SDK itself never sends a raw key anywhere.
+SDK itself never sends a raw key anywhere. `rotateChatVersion()` asks the
+gateway to mint and reseal a fresh key for a chat's current participants
+on demand; `sendMessage()` also triggers this automatically (one retry) if
+the contract rejects a send as `ROTATION_REQUIRED`.
+
+Widget-visitor rooms (see "Widgets & visitor chat" below) work differently:
+the symmetric key there is generated once per room and sealed only for the
+widget owner's registered devices — there is no contract-side chat object,
+no rotation, and no persistence, so losing every device that has the key
+(or letting the process exit without `registerVisitorSession`-ing it first)
+ends that conversation for good.
 
 ## Access tiers
 
 A freshly generated wallet starts in the contract's default tier
 (`"early"` in local dev — see `contract/contract/access.config.json`), which
-can create one-on-one chats but **not** groups (`group:create: false`).
-`addParticipant`/`removeParticipant` on an *existing* group only require
-chat-level admin/moderator role, not a tier capability — so a bot can manage
-joins on a group it didn't create, as long as whoever created it adds the
-bot as admin/moderator. `moderation-bot` assumes this setup; see the comment
-at the top of `examples/moderation-bot/index.ts`.
+can create one-on-one chats but **not** groups (`group:create: false`) and
+**cannot create widgets** (widgets require the `beta`/`ga`/`admin` tier or a
+`pro` subscription — a freshly generated wallet gets `widgets_not_available`
+from `createWidget`). `addParticipant`/`removeParticipant` on an *existing*
+group only require chat-level admin/moderator role, not a tier capability —
+so a bot can manage joins on a group it didn't create, as long as whoever
+created it adds the bot as admin/moderator. `moderation-bot` assumes this
+setup; see the comment at the top of `examples/moderation-bot/index.ts`.
+Tiers that *can* create widgets still cap how many via `access.limits.widgets`
+(e.g. 5 on `beta`/`pro`) — exceeding it returns `widget_limit_reached`.
 
 ## Rate limits
 
@@ -176,6 +192,8 @@ unless noted:
 |---|---|
 | `auth` (signed_message) | 10 attempts / 5 min |
 | `sendMessage` | 5 / 10 sec |
+| `reactToMessage` / `removeReaction` | 30 / 10 sec |
+| `editMessage` / `deleteMessage` (same envelope type) | 5 / 60 sec |
 | `sendTyping` (`isTyping: true`) | 1 / 2 sec, excess silently dropped (no error) |
 | `createChat` | 3 / hour |
 | `generateInviteLink` / `revokeInviteLink` | 5 / hour |
@@ -184,12 +202,17 @@ unless noted:
 | `setChatDiscoverable` | 10 / hour |
 | `listPublicChats` | 30 / min |
 
-`leaveChat`, `getProfile`, `reportUser`, `setChatMode`, and `updateChatRoles`
-have **no gateway-level rate limit today** — not an oversight being glossed
-over, just not implemented yet; noted here so the absence from this table
-isn't mistaken for "covered, not worth mentioning."
+`leaveChat`, `getProfile`, `reportUser`, `setChatMode`, `updateChatRoles`,
+`rotateChatVersion`, every widget method (`createWidget`/`deleteWidget`/
+`updateWidget`/`listWidgets`/`getWidgetInfo`), and every widget-visitor relay
+action (`sendVisitorMessage`/`reactToVisitorMessage`/`editVisitorMessage`/
+`removeVisitorMessage`/`sendVisitorTyping`/`endVisitorRoom`) have **no
+gateway-level rate limit today** — not an oversight being glossed over, just
+not implemented yet; noted here so the absence from this table isn't
+mistaken for "covered, not worth mentioning." (Widget *creation itself* is
+still bounded indirectly by the per-tier `widgets` count limit above.)
 
-Exceeding any of these surfaces as `EvergramRateLimitError`.
+Exceeding any of the listed limits surfaces as `EvergramRateLimitError`.
 
 ## Typed errors
 
@@ -199,25 +222,101 @@ code if you need it:
 
 | Class | Meaning |
 |---|---|
-| `EvergramAuthError` | Auth/session rejected (bad signature, expired session, etc). Core retries once on its own where it safely can. |
+| `EvergramAuthError` | Auth/session rejected (bad signature, expired session, etc). `Core` retries once on its own where it safely can. |
+| `EvergramDeviceRevokedError` | This device was revoked (see device management) — terminal, not an auth hiccup. Register a new device instead of retrying. |
+| `EvergramRotationError` | A chat's key needed to rotate and the single automatic rotate-and-resend `sendMessage()` already attempts also failed. |
 | `EvergramRateLimitError` | Hit one of the limits above. |
 | `EvergramAccessDeniedError` | Missing capability/role for this action. |
 | `EvergramRestrictedError` | Account flagged restricted (see `reputationUpdated`). |
-| `EvergramNotFoundError` | Chat/device/etc not found. |
-| `EvergramValidationError` | Bad input — including client-side checks (message size, participant count) that fail fast before a round-trip. |
+| `EvergramNotFoundError` | Chat/device/widget/visitor-room/etc not found. |
+| `EvergramValidationError` | Bad input — including client-side checks (message size, participant count, malformed device key) that fail fast before a round-trip. |
 | `EvergramTimeoutError` | No response within the request timeout. |
 | `EvergramConnectionError` | Transport-level connect failure. |
+
+Two widget-specific codes — `widgets_not_available` (see "Access tiers")
+and `widget_limit_reached` — aren't narrowed into one of the subclasses
+above yet; they still reject with a typed `EvergramError` whose `.code`
+carries the exact string, just not via `instanceof` on a more specific
+class.
+
+## Message content & builders
+
+A decrypted message's `text` is either plain text or a small JSON envelope
+(audio, payment request, payment receipt) discriminated by a `type` field —
+`message-content.ts` is the single place that tells those apart, mirroring
+`webapp/app/lib/message-content.ts` exactly so the two clients never drift
+on what a given wire payload means.
+
+```ts
+import { parseMessageContent, formatMessagePreview } from "@evergram/sdk";
+
+bot.onMessage((msg) => {
+  switch (msg.content.type) {
+    case "text":
+      console.log(msg.content.text);
+      break;
+    case "payment_request":
+      console.log(`payment requested: ${msg.content.amount} ${msg.content.currency}`);
+      break;
+    // "audio", "payment_receipt" — see MessageContent in src/message-content.ts
+  }
+
+  console.log(formatMessagePreview(msg.content)); // human-readable one-liner, e.g. for logs
+});
+```
+
+`msg.content`/`edit.content` (`EvergramChatMessage`/`EvergramMessageEdited`)
+are already parsed for you — `parseMessageContent` is exported mainly for
+re-parsing `getChat()`-cached text or your own stored history.
+`buildPaymentRequest`/`buildPaymentReceipt`/`buildAudioMessage` construct the
+matching JSON string to pass into `sendMessage()`, instead of hand-rolling
+the envelope shape yourself (see `examples/paywall-bot` for a full
+request/receipt exchange).
+
+## Widgets & visitor chat
+
+A **widget** is a shareable, embeddable chat surface (see the webapp's
+`/developers/embed` docs) — anonymous visitors talk to it with no account,
+wallet, or install, and never see the widget owner's real identity. From the
+SDK side, the owner/bot manages widgets and the resulting conversations:
+
+- `createWidget` / `deleteWidget` / `updateWidget` / `listWidgets` /
+  `getWidgetInfo` manage the widget entities themselves (gated by access
+  tier — see "Access tiers").
+- When a visitor opens a widget and sends their first message, this bot
+  (if one of its devices is online) receives a `visitorRoomRequested` event
+  carrying an already-decrypted `firstMessage` and the room's symmetric key.
+  `EvergramBot.onVisitorRoomRequested` wraps this into a `VisitorSessionHandle`
+  (`reply`/`react`/`edit`/`remove`/`typing`/`end`) reused across every
+  subsequent `onVisitorMessage`/`onVisitorReaction`/`onVisitorMessageEdited`/
+  `onVisitorMessageDeleted`/`onVisitorTyping` callback for that same
+  `roomToken`.
+- These rooms are **not** contract-backed chats — no offline inbox, no
+  persistence, no rotation. If this process restarts, it has no way to
+  recover an in-progress room on its own; persist
+  `{roomToken, symKey, widgetId, visitorLabel, origin}` yourself (from the
+  `visitorRoomRequested` event) and call `core.registerVisitorSession(...)`
+  with it *before* `connect()`/`start()` on the next run — see
+  `examples/visitor-bot` for the full pattern, including cleanup on
+  `visitorStatusChanged` reporting `"closed"`.
+- `onVisitorRoomTimedOut` fires in the rarer race where an owner device was
+  online when the room was created but disconnected before actually joining
+  it — the common "no device online at all" case is rejected synchronously
+  to the visitor and this bot never hears about it.
 
 ## API reference
 
 Quick lookup of the full surface — see the sections above for the *why*
-behind auth, encryption, and access tiers; this is just *what's callable*.
+behind auth, encryption, access tiers, and widgets/visitor chat; this is
+just *what's callable*.
 
 ### `EvergramCore`
 
 The 1:1 protocol mirror. Every method sends one request and resolves with
 the matching response (or rejects with a [typed error](#typed-errors)),
 except where noted as fire-and-forget.
+
+**Connection & profile**
 
 | Method | Description |
 |---|---|
@@ -227,6 +326,13 @@ except where noted as fire-and-forget.
 | `registerDevice()` | Registers this device for the current identity. Normally unnecessary — `connect()` does this for you on first use. |
 | `setProfile(opts: { nickname?, avatarUrl?, bio? })` | Sets this identity's profile fields. No tier/capability gate. |
 | `getProfile(remoteIdentity: string)` | Reads another identity's profile (`nickname`/`avatarUrl`/`bio`). |
+| `isRestricted: boolean` | Set from `reputationUpdated`/auth pushes — true if the contract has flagged this account restricted. |
+| `profile?: Profile`, `profileStatus?: string` | The profile/status last reported back by `authResponse` — `profileStatus` is `"complete"` or `"missing_nickname"`. |
+
+**Chats — lifecycle, requests & privacy**
+
+| Method | Description |
+|---|---|
 | `createChat(type: "one-on-one" \| "group", participants: string[], meta?)` | Creates a chat. `participants` must include your own identity key and at least one other; groups need the `group:create` capability ([Access tiers](#access-tiers)). |
 | `acceptChatRequest(fromIdentity: string)` | Accepts a pending one-on-one request, when the recipient has `requireChatApproval` on. |
 | `acceptGroupInvite(chatId: string)` | Joins a group you were invited to, under the same approval gate. |
@@ -236,30 +342,76 @@ except where noted as fire-and-forget.
 | `blockIdentity(targetIdentity: string)` | Blocks an identity; also clears any pending chat request from them. |
 | `unblockIdentity(targetIdentity: string)` | Reverses `blockIdentity`. |
 | `updatePrivacySettings(requireChatApproval: boolean)` | Toggles whether new one-on-one chats/group invites need your explicit accept. |
-| `sendMessage(chatId: string, text: string)` | Encrypts and sends a text message. |
-| `sendTyping(chatId: string, isTyping: boolean)` | Fire-and-forget typing indicator — no return value. Gateway-throttled, see [Rate limits](#rate-limits). |
-| `addParticipant(chatId: string, remoteIdentity: string)` | Adds a participant to an existing chat — also how `JoinRequestHandle.approve()` is implemented. |
-| `removeParticipant(chatId: string, remoteIdentity: string)` | Removes a participant. |
 | `leaveChat(chatId: string)` | Leaves a group chat. Rejected with `leave_not_allowed` for one-on-one chats. |
+| `rotateChatVersion(chatId: string)` | Asks the gateway to mint and reseal a fresh symmetric key for the chat's current participants. `sendMessage()` already does this for you once on `ROTATION_REQUIRED`. |
+| `getChat(chatId: string): ChatInfo \| undefined` | Locally cached chat metadata (participants, roles, `chatVersion`, etc). |
+| `syncChats(): void` | Fire-and-forget resync of chats/keys. Normally unnecessary — `connect()` calls this for you on every connect/reconnect. |
+
+**Messaging — send, react, edit, delete**
+
+| Method | Description |
+|---|---|
+| `sendMessage(chatId, text, opts?: { replyToMsgId? })` | Encrypts and sends a message. Auto rotate-and-resend once on `ROTATION_REQUIRED`. |
+| `sendTyping(chatId, isTyping: boolean)` | Fire-and-forget typing indicator — no return value. Gateway-throttled, see [Rate limits](#rate-limits). |
+| `reactToMessage(chatId, msgId, emoji: string)` | Reacts to a message with an (encrypted) emoji. |
+| `removeReaction(chatId, msgId)` | Clears your own reaction on a message. |
+| `editMessage(chatId, msgId, newText: string)` | Edits a text message you sent, within the contract's 15-minute edit window. Text messages only — rejected client-side for other content types. |
+| `deleteMessage(chatId, msgId)` | "Delete for everyone" — same envelope as `editMessage`, with no ciphertext. Same 15-minute window. |
+
+**Participants, roles & moderation**
+
+| Method | Description |
+|---|---|
+| `addParticipant(chatId, remoteIdentity)` | Adds a participant to an existing chat — also how `JoinRequestHandle.approve()` is implemented. |
+| `removeParticipant(chatId, remoteIdentity)` | Removes a participant. |
 | `updateChatRoles(chatId, roles: { admins: string[], moderators: string[] })` | Replaces a group's full admin/moderator lists (not a delta) — group chats only. |
 | `setChatMode(chatId, opts: { moderated: boolean })` | Toggles a group's moderated flag. |
-| `reportUser(targetIdentity: string, reason: string)` | Flags an identity for abuse; may affect their reputation score. |
+| `reportUser(targetIdentity, reason: string)` | Flags an identity for abuse; may affect their reputation score. |
+
+**Invites & discovery**
+
+| Method | Description |
+|---|---|
 | `generateInviteLink(chatId, opts?: { expiresAt?, maxUses? })` | Creates a shareable invite code for a chat. Admin-only. |
-| `revokeInviteLink(chatId: string)` | Invalidates a chat's current invite code. Admin-only. |
-| `resolveInvite(inviteCode: string)` | Looks up what an invite code points to, without joining. |
-| `requestJoin(inviteCode: string)` | Requests to join via an invite code — surfaces as a `joinRequested` event to the chat's admins/moderators. |
+| `revokeInviteLink(chatId)` | Invalidates a chat's current invite code. Admin-only. |
+| `resolveInvite(inviteCode)` | Looks up what an invite code points to, without joining. |
+| `requestJoin(inviteCode)` | Requests to join via an invite code — surfaces as a `joinRequested` event to the chat's admins/moderators. |
 | `setChatDiscoverable(chatId, discoverable: boolean, category?)` | Lists/unlists a group in public discovery. Admin-only. |
 | `listPublicChats(category?: string)` | Browses discoverable public groups. |
-| `syncChats(): void` | Fire-and-forget resync of chats/keys. Normally unnecessary — `connect()` calls this for you on every connect/reconnect. |
-| `getChat(chatId: string): ChatInfo \| undefined` | Locally cached chat metadata (participants, roles, `chatVersion`, etc). |
-| `isRestricted: boolean` | Set from `reputationUpdated`/auth pushes — true if the contract has flagged this account restricted. |
-| `profile?: Profile`, `profileStatus?: string` | The profile/status last reported back by `authResponse` — `profileStatus` is `"complete"` or `"missing_nickname"`. |
 
-**Events** (`core.on(event, handler)`): `connected`, `authenticated`,
-`disconnected`, `reconnecting` (attempt number), `message`
-(`EvergramChatMessage`), `typing`, `delivery`, `chatKeyRotated` (`{chatId}`),
-`joinRequested`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
-(`ReputationUpdated`), `error`.
+**Widgets & widget-visitor chat** — see [Widgets & visitor chat](#widgets--visitor-chat)
+
+| Method | Description |
+|---|---|
+| `createWidget(name: string)` | Creates a widget. Requires Beta/Pro/Admin access ([Access tiers](#access-tiers)). |
+| `deleteWidget(widgetId)` | Deletes a widget. |
+| `updateWidget(widgetId, opts: { enabled? })` | Toggles a widget on/off without deleting it. |
+| `listWidgets()` | Lists this identity's widgets. |
+| `getWidgetInfo(widgetId)` | Public lookup — no authorization check, so it works for the embedding page itself, not just the owner. |
+| `sendVisitorMessage(roomToken, text, sender?)` | Replies in an open visitor room. `sender` defaults to this identity's own profile nickname. |
+| `reactToVisitorMessage(roomToken, msgId, emoji: string \| null)` | Reacts to (or, with `null`, clears a reaction on) a visitor-room message. |
+| `editVisitorMessage(roomToken, msgId, text)` | Edits a message this bot sent in the room. |
+| `removeVisitorMessage(roomToken, msgId)` | Removes a message this bot sent in the room. |
+| `sendVisitorTyping(roomToken, isTyping: boolean)` | Fire-and-forget typing indicator for the visitor side. |
+| `endVisitorRoom(roomToken)` | Permanently ends the room — the visitor is notified immediately and can't reconnect into it. |
+| `getVisitorSession(roomToken)` | Local lookup of `{widgetId, visitorLabel, origin}` for a room this process is a party to. |
+| `registerVisitorSession(meta: { roomToken, symKey, widgetId, visitorLabel, origin })` | Rehydrates a room this process was a party to before a restart. Call **before** `connect()`/`start()`. |
+
+**Events** (`core.on(event, handler)`):
+
+`connected`, `authenticated`, `disconnected`, `reconnecting` (attempt
+number), `message` (`EvergramChatMessage`), `reaction` (`EvergramReaction`),
+`messageEdited` (`EvergramMessageEdited`), `messageDeleted`
+(`EvergramMessageDeleted`), `typing`, `delivery`, `chatKeyRotated`
+(`{chatId}`), `joinRequested`, `chatRequestReceived`, `groupInviteReceived`,
+`restricted` (`ReputationUpdated`), `error`, `visitorRoomRequested`
+(`EvergramVisitorRoomRequested`), `visitorMessage`
+(`EvergramVisitorMessage`), `visitorReaction` (`EvergramVisitorReaction`),
+`visitorMessageEdited` (`EvergramVisitorMessageEdited`),
+`visitorMessageDeleted` (`EvergramVisitorMessageDeleted`), `visitorTyping`
+(`EvergramVisitorTyping`), `visitorStatusChanged`
+(`EvergramVisitorStatusChanged`), `visitorRoomTimedOut`
+(`EvergramVisitorRoomTimedOut`).
 
 ### `EvergramBot`
 
@@ -271,11 +423,27 @@ exposes the full `EvergramCore` surface above for anything not covered here.
 | `new EvergramBot(opts: EvergramBotOptions)` | Constructs the bot — same options as `EvergramCore`, plus optional `name`. |
 | `start(): Promise<void>` | Connects and authenticates; applies `name` via `setProfile` only if it differs from the nickname `authResponse` already reports. |
 | `stop(): void` | Closes the connection. |
-| `onMessage(handler): () => void` | Subscribes to incoming chat messages. Returns an unsubscribe function. |
+| `onMessage(handler): () => void` | Subscribes to incoming chat messages. |
+| `onReaction(handler): () => void` | Subscribes to message reactions (including removals, `emoji: null`). |
+| `onMessageEdited(handler): () => void` | Subscribes to message edits. |
+| `onMessageDeleted(handler): () => void` | Subscribes to message deletions ("delete for everyone"). |
 | `onJoinRequest(handler): () => void` | Subscribes to join requests on chats this bot administers/moderates. `req.approve()`/`req.deny()` map to `addParticipant`/a permanent throw (no reject RPC exists — see [Known protocol limitations](#known-protocol-limitations-not-sdk-bugs)). |
 | `onChatRequest(handler): () => void` | Subscribes to pending one-on-one requests (including ones already pending at connect time). `req.approve()`/`req.deny()` map to `acceptChatRequest`/`blockIdentity`. |
 | `onGroupInvite(handler): () => void` | Subscribes to pending group invites (including ones already pending at connect time). `req.approve()`/`req.deny()` map to `acceptGroupInvite`/`declineGroupInvite`. |
 | `reply(msg, text)` | Shorthand for `core.sendMessage(msg.chatId, text)`. |
+| `onVisitorRoomRequested(handler): () => void` | Fires once per anonymous widget-visitor conversation, on their opening message. Handler receives a `VisitorSessionHandle` and the (possibly-null) decrypted first message. |
+| `onVisitorMessage(handler): () => void` | Subsequent messages in an open visitor room. |
+| `onVisitorReaction(handler): () => void` | Reactions in a visitor room. |
+| `onVisitorMessageEdited(handler): () => void` | Edits in a visitor room. |
+| `onVisitorMessageDeleted(handler): () => void` | Removals in a visitor room. |
+| `onVisitorTyping(handler): () => void` | Typing indicator from the visitor side. |
+| `onVisitorRoomTimedOut(handler): () => void` | The rarer race described in [Widgets & visitor chat](#widgets--visitor-chat) — an owner device was online but didn't join before the room timed out. |
+
+Every `onVisitor*` handler above (except `onVisitorRoomTimedOut`) receives a
+`VisitorSessionHandle | undefined` as its second argument —
+`undefined` only if the room has already closed/expired server-side by the
+time the event is processed. The handle exposes `reply`/`react`/`edit`/
+`remove`/`typing`/`end`, all bound to that room's `roomToken`.
 
 ## Known protocol limitations (not SDK bugs)
 
@@ -286,6 +454,13 @@ exposes the full `EvergramCore` surface above for anything not covered here.
   requests by field type, FIFO, mirroring the webapp client's own
   `_sendAndWaitResponse`. Concurrent calls of the *same* method type share
   this limitation; different method types don't collide.
+- `widgets_not_available`/`widget_limit_reached` (from `createWidget`)
+  aren't narrowed into a specific `EvergramError` subclass yet — see
+  [Typed errors](#typed-errors).
+- Widget-visitor rooms have no contract-side persistence at all — a process
+  restart loses every in-progress room unless the caller persisted
+  `{roomToken, symKey, widgetId, visitorLabel, origin}` itself and replays
+  it through `registerVisitorSession()`. See [Widgets & visitor chat](#widgets--visitor-chat).
 
 ## Testing
 
@@ -298,62 +473,3 @@ npm test                 # unit — pure logic, no network, runs anywhere
 npm run test:integration # needs the local stack up at ws://localhost:9000/api/ws (override with EVERGRAM_TEST_WS_URL)
 npm run typecheck:test   # typechecks test/ too — `typecheck` only covers src/examples
 ```
-
-`group:create` is gated behind the beta/ga/admin tiers (see
-`contract/contract/access.config.json`) — a freshly generated wallet can't
-create groups, so the `updateChatRoles`/`setChatMode`/`leaveChat` group tests
-in `chat-management.test.ts` are skipped unless `EVERGRAM_TEST_ADMIN_SEED` is
-set to a wallet seed already granted one of those tiers on your local stack.
-Prefer `admin` (no devices/chats limit) over `beta` (`devices: 3`,
-`chats: 20`) — the same wallet address gets reused across every local run of
-that test file, so a capped tier will eventually exhaust its limit.
-
-**Unit** (`test/unit/`): `wallet.ts`/`crypto.ts` against the real `xrpl`/
-`tweetnacl` libraries, `identity.ts`'s key format, the typed-error mapping
-table, and a byte-for-byte diff between this package's `evergram.proto` and
-webapp's canonical copy — catches exactly the "forgot to re-sync after
-changing the schema" mistake the manual-copy step invites.
-
-**Integration** (`test/integration/`): drives the real local gateway over a
-real WebSocket, deliberately not mocked — a mock would only prove the SDK
-agrees with itself, and the actual risk here is SDK/gateway drift (the
-nonce handshake, the contract's response shapes). The cost is needing the
-local stack up and ~90s of wall-clock time; a single local HotPocket node
-has a real consensus roundtime (`.contractdata/cfg/hp.cfg`), so these files
-run sequentially rather than in parallel to avoid contending with
-themselves.
-
-- `auth.test.ts` — the regression suite for the nonce-based replay-window
-  fix: self-heal register+auth, a signature captured on one connection
-  rejected when replayed on another, a second auth attempt on the same
-  connection rejected once its nonce is consumed. If this ever goes red,
-  the replay window is probably back.
-- `messaging.test.ts` — full E2EE round trip: `createChat` → key derivation
-  on both sides → `sendMessage` → decrypt.
-- `reconnect.test.ts` — Transport's automatic reconnect-with-backoff after a
-  dropped connection, and `requestWithReauth`'s recovery via a fresh
-  connection.
-
-**Caught two real bugs while being written, not while being planned** —
-exactly the case for having this suite instead of re-deriving verification
-by hand each time:
-
-1. `requestWithReauth`'s same-connection reauth (meant to recover from a
-   24h-stale session JWT on a connection that never dropped) hung
-   indefinitely after the nonce redesign, since the gateway only ever pushes
-   `AuthChallenge` once, at connection-open. Fixed in `core.ts` to recover
-   via a fresh connection instead, which always gets a fresh nonce —
-   `reconnect.test.ts` pins this down.
-2. A fresh `EvergramCore` — including every restart of a long-running bot
-   process — started with empty `chats`/`symKeys` maps and **nothing ever
-   re-populated them**: neither `EvergramBot.start()` nor the examples called
-   `syncChats()`, unlike the webapp client (which calls it right after auth
-   — see `evergram-client.ts`'s `ensureAuthSessionReady`). Any message for a
-   chat created before the bot's current process started was silently
-   swallowed: queued in `pendingEnvelopes` and never drained, no error, no
-   log. Fixed by having `Core` call `syncChats()` itself right after every
-   successful `authenticate()` (initial connect *and* every reconnect) —
-   `messaging.test.ts`'s "rediscovers a pre-existing chat... after a fresh
-   process restart" test reproduces the exact symptom and pins the fix down.
-
-`npx tsc --noEmit` is clean in both `webapp` and this package.

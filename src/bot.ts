@@ -11,6 +11,7 @@ import {
   EvergramVisitorReaction,
   EvergramVisitorRoomRequested,
   EvergramVisitorRoomTimedOut,
+  EvergramVisitorTyping,
 } from "./core";
 import { ChatInfo, JoinRequestedEvent, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
 import { EvergramError } from "./errors";
@@ -58,6 +59,8 @@ export interface VisitorSessionHandle {
   react(msgId: string, emoji: string | null): void;
   edit(msgId: string, text: string): EphemeralEditEvent;
   remove(msgId: string): EphemeralRemoveEvent;
+  /** Signals (or clears) "agent is typing" to the visitor — mirrors the real chat's sendTyping. */
+  typing(isTyping: boolean): void;
   /** Permanently ends the conversation — the visitor can't reconnect into it afterward. */
   end(): void;
 }
@@ -72,6 +75,7 @@ function buildVisitorSessionHandle(
     react: (msgId, emoji) => core.reactToVisitorMessage(meta.roomToken, msgId, emoji),
     edit: (msgId, text) => core.editVisitorMessage(meta.roomToken, msgId, text),
     remove: (msgId) => core.removeVisitorMessage(meta.roomToken, msgId),
+    typing: (isTyping) => core.sendVisitorTyping(meta.roomToken, isTyping),
     end: () => core.endVisitorRoom(meta.roomToken),
   };
 }
@@ -94,6 +98,7 @@ type VisitorMessageDeletedHandler = (
   deletion: EvergramVisitorMessageDeleted,
   handle: VisitorSessionHandle | undefined
 ) => void | Promise<void>;
+type VisitorTypingHandler = (event: EvergramVisitorTyping, handle: VisitorSessionHandle | undefined) => void | Promise<void>;
 type VisitorRoomTimedOutHandler = (event: EvergramVisitorRoomTimedOut) => void | Promise<void>;
 type JoinRequestHandler = (req: JoinRequestHandle) => void | Promise<void>;
 type ChatRequestHandler = (req: ChatRequestHandle) => void | Promise<void>;
@@ -306,6 +311,17 @@ export class EvergramBot {
 
     this.core.on("visitorMessageDeleted", wrapped);
     return () => this.core.off("visitorMessageDeleted", wrapped);
+  }
+
+  onVisitorTyping(handler: VisitorTypingHandler): () => void {
+    const wrapped = (event: EvergramVisitorTyping) => {
+      const meta = this.core.getVisitorSession(event.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorTyping", wrapped);
+    return () => this.core.off("visitorTyping", wrapped);
   }
 
   // Fires only in the rarer race where the widget owner had a device
