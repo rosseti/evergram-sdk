@@ -110,7 +110,7 @@ export interface EvergramCoreOptions {
    * enforces this regardless; this option only saves a round-trip.
    */
   maxMessageSize?: number;
-  /** Per-request timeout in ms. Default 20000. */
+  /** Per-request timeout in ms. Default 30000. */
   requestTimeoutMs?: number;
 }
 
@@ -285,7 +285,12 @@ export class EvergramCore extends EventEmitter {
     this.selfIdentityKey = identityKey(this.identity as any);
     this.maxParticipants = opts.maxParticipants ?? 100;
     this.maxMessageSize = opts.maxMessageSize;
-    this.requestTimeoutMs = opts.requestTimeoutMs ?? 20_000;
+    // Must clear the gateway's own per-attempt consensus-wait timeout
+    // (createPendingRequest's 25_000ms in gateway/consensus/queue.ts) with
+    // margin — otherwise the client gives up before the gateway itself
+    // would even call the request a failure, orphaning a write that's
+    // still in flight server-side.
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
 
     this.transport = new Transport(opts.url);
 

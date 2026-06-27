@@ -7,7 +7,7 @@ const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api
 async function main() {
   const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
 
-  const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "EchoBot" });
+  const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "EchoBot :)" });
 
   bot.core.on("error", (err) => console.error("[echo-bot] error:", err));
   bot.core.on("restricted", (event) => console.warn("[echo-bot] account restricted:", event.reason));

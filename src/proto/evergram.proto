@@ -360,12 +360,19 @@ message AddParticipantRequest {
   string                      chat_id           = 1;
   string                      remote_identity   = 2;
   map<string, AccountSymKeys> sym_key_encrypted = 3;
+  // The caller's last-known chat_version, same role as RotateChatVersion's
+  // field of the same name: the contract rejects a stale value with a
+  // conflict code instead of letting this write's symKeyEncrypted silently
+  // clobber a concurrent membership change's.
+  uint64                      expected_version  = 4;
 }
 
 message RemoveParticipantRequest {
   string                      chat_id           = 1;
   string                      remote_identity   = 2;
   map<string, AccountSymKeys> sym_key_encrypted = 3;
+  // See AddParticipantRequest.expected_version.
+  uint64                      expected_version  = 4;
 }
 
 message AddParticipantResponse {
@@ -977,6 +984,10 @@ message CheckBlocked {
 message AcceptGroupInvite {
   string                      chat_id           = 1;
   map<string, AccountSymKeys> sym_key_encrypted = 2;
+  // See AddParticipantRequest.expected_version — handleAcceptGroupInvite
+  // mutates this same chat's symKeyEncrypted, so it needs the same
+  // staleness guard.
+  uint64                      expected_version  = 3;
 }
 
 message AcceptGroupInviteResponse {

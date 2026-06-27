@@ -487,6 +487,13 @@ export interface AddParticipantRequest {
   chatId: string;
   remoteIdentity: string;
   symKeyEncrypted: { [key: string]: AccountSymKeys };
+  /**
+   * The caller's last-known chat_version, same role as RotateChatVersion's
+   * field of the same name: the contract rejects a stale value with a
+   * conflict code instead of letting this write's symKeyEncrypted silently
+   * clobber a concurrent membership change's.
+   */
+  expectedVersion: number;
 }
 
 export interface AddParticipantRequest_SymKeyEncryptedEntry {
@@ -498,6 +505,8 @@ export interface RemoveParticipantRequest {
   chatId: string;
   remoteIdentity: string;
   symKeyEncrypted: { [key: string]: AccountSymKeys };
+  /** See AddParticipantRequest.expected_version. */
+  expectedVersion: number;
 }
 
 export interface RemoveParticipantRequest_SymKeyEncryptedEntry {
@@ -1199,6 +1208,12 @@ export interface CheckBlocked {
 export interface AcceptGroupInvite {
   chatId: string;
   symKeyEncrypted: { [key: string]: AccountSymKeys };
+  /**
+   * See AddParticipantRequest.expected_version — handleAcceptGroupInvite
+   * mutates this same chat's symKeyEncrypted, so it needs the same
+   * staleness guard.
+   */
+  expectedVersion: number;
 }
 
 export interface AcceptGroupInvite_SymKeyEncryptedEntry {
@@ -5196,7 +5211,7 @@ export const ClaimBetaAccessResponse: MessageFns<ClaimBetaAccessResponse> = {
 };
 
 function createBaseAddParticipantRequest(): AddParticipantRequest {
-  return { chatId: "", remoteIdentity: "", symKeyEncrypted: {} };
+  return { chatId: "", remoteIdentity: "", symKeyEncrypted: {}, expectedVersion: 0 };
 }
 
 export const AddParticipantRequest: MessageFns<AddParticipantRequest> = {
@@ -5210,6 +5225,9 @@ export const AddParticipantRequest: MessageFns<AddParticipantRequest> = {
     globalThis.Object.entries(message.symKeyEncrypted).forEach(([key, value]: [string, AccountSymKeys]) => {
       AddParticipantRequest_SymKeyEncryptedEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
     });
+    if (message.expectedVersion !== 0) {
+      writer.uint32(32).uint64(message.expectedVersion);
+    }
     return writer;
   },
 
@@ -5245,6 +5263,14 @@ export const AddParticipantRequest: MessageFns<AddParticipantRequest> = {
           if (entry3.value !== undefined) {
             message.symKeyEncrypted[entry3.key] = entry3.value;
           }
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.expectedVersion = longToNumber(reader.uint64());
           continue;
         }
       }
@@ -5285,6 +5311,11 @@ export const AddParticipantRequest: MessageFns<AddParticipantRequest> = {
           {},
         )
         : {},
+      expectedVersion: isSet(object.expectedVersion)
+        ? globalThis.Number(object.expectedVersion)
+        : isSet(object.expected_version)
+        ? globalThis.Number(object.expected_version)
+        : 0,
     };
   },
 
@@ -5305,6 +5336,9 @@ export const AddParticipantRequest: MessageFns<AddParticipantRequest> = {
         });
       }
     }
+    if (message.expectedVersion !== 0) {
+      obj.expectedVersion = Math.round(message.expectedVersion);
+    }
     return obj;
   },
 
@@ -5322,6 +5356,7 @@ export const AddParticipantRequest: MessageFns<AddParticipantRequest> = {
         }
         return acc;
       }, {});
+    message.expectedVersion = object.expectedVersion ?? 0;
     return message;
   },
 };
@@ -5409,7 +5444,7 @@ export const AddParticipantRequest_SymKeyEncryptedEntry: MessageFns<AddParticipa
 };
 
 function createBaseRemoveParticipantRequest(): RemoveParticipantRequest {
-  return { chatId: "", remoteIdentity: "", symKeyEncrypted: {} };
+  return { chatId: "", remoteIdentity: "", symKeyEncrypted: {}, expectedVersion: 0 };
 }
 
 export const RemoveParticipantRequest: MessageFns<RemoveParticipantRequest> = {
@@ -5423,6 +5458,9 @@ export const RemoveParticipantRequest: MessageFns<RemoveParticipantRequest> = {
     globalThis.Object.entries(message.symKeyEncrypted).forEach(([key, value]: [string, AccountSymKeys]) => {
       RemoveParticipantRequest_SymKeyEncryptedEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
     });
+    if (message.expectedVersion !== 0) {
+      writer.uint32(32).uint64(message.expectedVersion);
+    }
     return writer;
   },
 
@@ -5458,6 +5496,14 @@ export const RemoveParticipantRequest: MessageFns<RemoveParticipantRequest> = {
           if (entry3.value !== undefined) {
             message.symKeyEncrypted[entry3.key] = entry3.value;
           }
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.expectedVersion = longToNumber(reader.uint64());
           continue;
         }
       }
@@ -5498,6 +5544,11 @@ export const RemoveParticipantRequest: MessageFns<RemoveParticipantRequest> = {
           {},
         )
         : {},
+      expectedVersion: isSet(object.expectedVersion)
+        ? globalThis.Number(object.expectedVersion)
+        : isSet(object.expected_version)
+        ? globalThis.Number(object.expected_version)
+        : 0,
     };
   },
 
@@ -5518,6 +5569,9 @@ export const RemoveParticipantRequest: MessageFns<RemoveParticipantRequest> = {
         });
       }
     }
+    if (message.expectedVersion !== 0) {
+      obj.expectedVersion = Math.round(message.expectedVersion);
+    }
     return obj;
   },
 
@@ -5535,6 +5589,7 @@ export const RemoveParticipantRequest: MessageFns<RemoveParticipantRequest> = {
         }
         return acc;
       }, {});
+    message.expectedVersion = object.expectedVersion ?? 0;
     return message;
   },
 };
@@ -15205,7 +15260,7 @@ export const CheckBlocked: MessageFns<CheckBlocked> = {
 };
 
 function createBaseAcceptGroupInvite(): AcceptGroupInvite {
-  return { chatId: "", symKeyEncrypted: {} };
+  return { chatId: "", symKeyEncrypted: {}, expectedVersion: 0 };
 }
 
 export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
@@ -15216,6 +15271,9 @@ export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
     globalThis.Object.entries(message.symKeyEncrypted).forEach(([key, value]: [string, AccountSymKeys]) => {
       AcceptGroupInvite_SymKeyEncryptedEntry.encode({ key: key as any, value }, writer.uint32(18).fork()).join();
     });
+    if (message.expectedVersion !== 0) {
+      writer.uint32(24).uint64(message.expectedVersion);
+    }
     return writer;
   },
 
@@ -15243,6 +15301,14 @@ export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
           if (entry2.value !== undefined) {
             message.symKeyEncrypted[entry2.key] = entry2.value;
           }
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.expectedVersion = longToNumber(reader.uint64());
           continue;
         }
       }
@@ -15278,6 +15344,11 @@ export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
           {},
         )
         : {},
+      expectedVersion: isSet(object.expectedVersion)
+        ? globalThis.Number(object.expectedVersion)
+        : isSet(object.expected_version)
+        ? globalThis.Number(object.expected_version)
+        : 0,
     };
   },
 
@@ -15295,6 +15366,9 @@ export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
         });
       }
     }
+    if (message.expectedVersion !== 0) {
+      obj.expectedVersion = Math.round(message.expectedVersion);
+    }
     return obj;
   },
 
@@ -15311,6 +15385,7 @@ export const AcceptGroupInvite: MessageFns<AcceptGroupInvite> = {
         }
         return acc;
       }, {});
+    message.expectedVersion = object.expectedVersion ?? 0;
     return message;
   },
 };
