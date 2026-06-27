@@ -23,6 +23,23 @@ export class EvergramValidationError extends EvergramError {}
 export class EvergramTimeoutError extends EvergramError {}
 export class EvergramConnectionError extends EvergramError {}
 
+// This device was revoked (see handleAuth's status:"revoked" check and
+// handleRevokeDevice in the contract) — terminal, not an auth hiccup.
+// Deliberately its own class, not EvergramAuthError: requestWithReauth
+// reconnects-and-retries on EvergramAuthError, which would just get
+// rejected again forever for a revoked device. A bot author seeing this
+// needs to re-register an entirely new device, not retry.
+export class EvergramDeviceRevokedError extends EvergramError {}
+
+// "rotation_conflict" (handleRotateChatVersion) and "rotation_required"/
+// "ROTATION_REQUIRED" (sendMessage.ts, when the sender's own identity has
+// fallen behind its required key epoch) — see the device-revocation design
+// doc's protocol invariants. Also kept out of AUTH_CODES for the same
+// reason as EvergramDeviceRevokedError: these aren't fixed by re-auth.
+// sendMessage() already retries once automatically on ROTATION_REQUIRED;
+// this is what surfaces if that single retry still doesn't resolve it.
+export class EvergramRotationError extends EvergramError {}
+
 const AUTH_CODES = new Set([
   "NOT_AUTHENTICATED",
   "invalid_authorization",
@@ -41,6 +58,16 @@ const AUTH_CODES = new Set([
   "invalid_signed_message_address",
   "invalid_signed_message_signature",
   "unsupported_chain_family",
+]);
+
+const DEVICE_REVOKED_CODES = new Set([
+  "device_revoked",
+]);
+
+const ROTATION_CODES = new Set([
+  "rotation_conflict",
+  "rotation_required",
+  "ROTATION_REQUIRED",
 ]);
 
 const RATE_LIMIT_CODES = new Set([
@@ -107,6 +134,8 @@ const VALIDATION_CODES = new Set([
 // caller still gets a typed error with .code set, just not narrowed further.
 export function errorFromCode(code: string, message?: string): EvergramError {
   if (AUTH_CODES.has(code)) return new EvergramAuthError(code, message);
+  if (DEVICE_REVOKED_CODES.has(code)) return new EvergramDeviceRevokedError(code, message);
+  if (ROTATION_CODES.has(code)) return new EvergramRotationError(code, message);
   if (RATE_LIMIT_CODES.has(code)) return new EvergramRateLimitError(code, message);
   if (ACCESS_DENIED_CODES.has(code)) return new EvergramAccessDeniedError(code, message);
   if (RESTRICTED_CODES.has(code)) return new EvergramRestrictedError(code, message);

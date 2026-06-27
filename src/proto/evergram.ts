@@ -275,6 +275,8 @@ export interface ClientMessage {
   listWidgets?: ListWidgets | undefined;
   getWidgetInfo?: GetWidgetInfo | undefined;
   createVisitorRoom?: CreateVisitorRoom | undefined;
+  revokeDevice?: RevokeDevice | undefined;
+  listDevices?: ListDevices | undefined;
 }
 
 /**
@@ -661,6 +663,8 @@ export interface ServerMessage {
   createVisitorRoomResponse?: CreateVisitorRoomResponse | undefined;
   visitorRoomRequestedEvent?: VisitorRoomRequestedEvent | undefined;
   visitorRoomTimedOutEvent?: VisitorRoomTimedOutEvent | undefined;
+  revokeDeviceResponse?: RevokeDeviceResponse | undefined;
+  listDevicesResponse?: ListDevicesResponse | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -685,6 +689,12 @@ export interface RotateChatVersion {
   chatId: string;
   account: string;
   symKeyEncrypted: { [key: string]: AccountSymKeys };
+  /**
+   * The caller's last-known chat_version. The contract rejects a stale value
+   * with "rotation_conflict" instead of silently overwriting a concurrent
+   * rotation's key.
+   */
+  expectedVersion: number;
 }
 
 export interface RotateChatVersion_SymKeyEncryptedEntry {
@@ -776,6 +786,21 @@ export interface EditContent {
 export interface Device {
   deviceId: string;
   devicePubHex: string;
+  /**
+   * Populated only in device-listing responses (RegisterDeviceResponse.devices,
+   * ListDevicesResponse.devices) — empty/zero on every other use of this
+   * message (Envelope.device, Auth.device, etc.), which always describe the
+   * calling connection's own current device.
+   */
+  status: string;
+  revokedAt: number;
+  revocationEpoch: number;
+  lastSeenAt: number;
+  /**
+   * platform: client self-declared (e.g. "Chrome · Ubuntu", "Terminal").
+   * Input on Auth/RegisterDevice.device; echoed back on every response.
+   */
+  platform: string;
 }
 
 export interface RegisterDevice {
@@ -792,6 +817,28 @@ export interface RegisterDeviceResponse {
   rotatedSymKeys: ChatInfo[];
 }
 
+/**
+ * Read-only refresh of the caller's own device list — lets the UI re-list
+ * right after a revoke without going through registerDevice again.
+ */
+export interface ListDevices {
+}
+
+export interface ListDevicesResponse {
+  status: ResponseStatus | undefined;
+  devices: Device[];
+}
+
+export interface RevokeDevice {
+  deviceId: string;
+}
+
+export interface RevokeDeviceResponse {
+  status: ResponseStatus | undefined;
+  deviceId: string;
+  revocationEpoch: number;
+}
+
 export interface Auth {
   identity: ChainIdentity | undefined;
   proof: AuthProof | undefined;
@@ -806,6 +853,11 @@ export interface AccessInfo {
   invitedBy: string;
   subscriptions: Subscription[];
   isRestricted: boolean;
+  /**
+   * From access.config.json's per-tier limits.devices — absent means no
+   * limit is enforced (e.g. admin's "*": null tier config), not zero.
+   */
+  maxDevices?: number | undefined;
 }
 
 export interface AuthResponse {
@@ -889,6 +941,14 @@ export interface ChatInfo {
   createdAt: number;
   symKeyEncrypted: { [key: string]: AccountSymKeys };
   pendingJoinRequests: string[];
+  /**
+   * Raw epoch numbers, not a precomputed boolean — a boolean can't express
+   * "how far behind", these can. needsRekey = current_key_epoch <
+   * required_key_epoch is derived client-side. See contract's
+   * handleGetChat/queryChats and the device-revocation design doc.
+   */
+  currentKeyEpoch: number;
+  requiredKeyEpoch: number;
 }
 
 export interface ChatInfo_SymKeyEncryptedEntry {
@@ -1925,6 +1985,8 @@ function createBaseClientMessage(): ClientMessage {
     listWidgets: undefined,
     getWidgetInfo: undefined,
     createVisitorRoom: undefined,
+    revokeDevice: undefined,
+    listDevices: undefined,
   };
 }
 
@@ -2070,6 +2132,12 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.createVisitorRoom !== undefined) {
       CreateVisitorRoom.encode(message.createVisitorRoom, writer.uint32(386).fork()).join();
+    }
+    if (message.revokeDevice !== undefined) {
+      RevokeDevice.encode(message.revokeDevice, writer.uint32(394).fork()).join();
+    }
+    if (message.listDevices !== undefined) {
+      ListDevices.encode(message.listDevices, writer.uint32(402).fork()).join();
     }
     return writer;
   },
@@ -2457,6 +2525,22 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.createVisitorRoom = CreateVisitorRoom.decode(reader, reader.uint32());
           continue;
         }
+        case 49: {
+          if (tag !== 394) {
+            break;
+          }
+
+          message.revokeDevice = RevokeDevice.decode(reader, reader.uint32());
+          continue;
+        }
+        case 50: {
+          if (tag !== 402) {
+            break;
+          }
+
+          message.listDevices = ListDevices.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2691,6 +2775,16 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.create_visitor_room)
         ? CreateVisitorRoom.fromJSON(object.create_visitor_room)
         : undefined,
+      revokeDevice: isSet(object.revokeDevice)
+        ? RevokeDevice.fromJSON(object.revokeDevice)
+        : isSet(object.revoke_device)
+        ? RevokeDevice.fromJSON(object.revoke_device)
+        : undefined,
+      listDevices: isSet(object.listDevices)
+        ? ListDevices.fromJSON(object.listDevices)
+        : isSet(object.list_devices)
+        ? ListDevices.fromJSON(object.list_devices)
+        : undefined,
     };
   },
 
@@ -2837,6 +2931,12 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     if (message.createVisitorRoom !== undefined) {
       obj.createVisitorRoom = CreateVisitorRoom.toJSON(message.createVisitorRoom);
     }
+    if (message.revokeDevice !== undefined) {
+      obj.revokeDevice = RevokeDevice.toJSON(message.revokeDevice);
+    }
+    if (message.listDevices !== undefined) {
+      obj.listDevices = ListDevices.toJSON(message.listDevices);
+    }
     return obj;
   },
 
@@ -2982,6 +3082,12 @@ export const ClientMessage: MessageFns<ClientMessage> = {
       : undefined;
     message.createVisitorRoom = (object.createVisitorRoom !== undefined && object.createVisitorRoom !== null)
       ? CreateVisitorRoom.fromPartial(object.createVisitorRoom)
+      : undefined;
+    message.revokeDevice = (object.revokeDevice !== undefined && object.revokeDevice !== null)
+      ? RevokeDevice.fromPartial(object.revokeDevice)
+      : undefined;
+    message.listDevices = (object.listDevices !== undefined && object.listDevices !== null)
+      ? ListDevices.fromPartial(object.listDevices)
       : undefined;
     return message;
   },
@@ -7278,6 +7384,8 @@ function createBaseServerMessage(): ServerMessage {
     createVisitorRoomResponse: undefined,
     visitorRoomRequestedEvent: undefined,
     visitorRoomTimedOutEvent: undefined,
+    revokeDeviceResponse: undefined,
+    listDevicesResponse: undefined,
   };
 }
 
@@ -7450,6 +7558,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.visitorRoomTimedOutEvent !== undefined) {
       VisitorRoomTimedOutEvent.encode(message.visitorRoomTimedOutEvent, writer.uint32(458).fork()).join();
+    }
+    if (message.revokeDeviceResponse !== undefined) {
+      RevokeDeviceResponse.encode(message.revokeDeviceResponse, writer.uint32(466).fork()).join();
+    }
+    if (message.listDevicesResponse !== undefined) {
+      ListDevicesResponse.encode(message.listDevicesResponse, writer.uint32(474).fork()).join();
     }
     return writer;
   },
@@ -7909,6 +8023,22 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.visitorRoomTimedOutEvent = VisitorRoomTimedOutEvent.decode(reader, reader.uint32());
           continue;
         }
+        case 58: {
+          if (tag !== 466) {
+            break;
+          }
+
+          message.revokeDeviceResponse = RevokeDeviceResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 59: {
+          if (tag !== 474) {
+            break;
+          }
+
+          message.listDevicesResponse = ListDevicesResponse.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8188,6 +8318,16 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.visitor_room_timed_out_event)
         ? VisitorRoomTimedOutEvent.fromJSON(object.visitor_room_timed_out_event)
         : undefined,
+      revokeDeviceResponse: isSet(object.revokeDeviceResponse)
+        ? RevokeDeviceResponse.fromJSON(object.revokeDeviceResponse)
+        : isSet(object.revoke_device_response)
+        ? RevokeDeviceResponse.fromJSON(object.revoke_device_response)
+        : undefined,
+      listDevicesResponse: isSet(object.listDevicesResponse)
+        ? ListDevicesResponse.fromJSON(object.listDevicesResponse)
+        : isSet(object.list_devices_response)
+        ? ListDevicesResponse.fromJSON(object.list_devices_response)
+        : undefined,
     };
   },
 
@@ -8362,6 +8502,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.visitorRoomTimedOutEvent !== undefined) {
       obj.visitorRoomTimedOutEvent = VisitorRoomTimedOutEvent.toJSON(message.visitorRoomTimedOutEvent);
+    }
+    if (message.revokeDeviceResponse !== undefined) {
+      obj.revokeDeviceResponse = RevokeDeviceResponse.toJSON(message.revokeDeviceResponse);
+    }
+    if (message.listDevicesResponse !== undefined) {
+      obj.listDevicesResponse = ListDevicesResponse.toJSON(message.listDevicesResponse);
     }
     return obj;
   },
@@ -8564,6 +8710,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       (object.visitorRoomTimedOutEvent !== undefined && object.visitorRoomTimedOutEvent !== null)
         ? VisitorRoomTimedOutEvent.fromPartial(object.visitorRoomTimedOutEvent)
         : undefined;
+    message.revokeDeviceResponse = (object.revokeDeviceResponse !== undefined && object.revokeDeviceResponse !== null)
+      ? RevokeDeviceResponse.fromPartial(object.revokeDeviceResponse)
+      : undefined;
+    message.listDevicesResponse = (object.listDevicesResponse !== undefined && object.listDevicesResponse !== null)
+      ? ListDevicesResponse.fromPartial(object.listDevicesResponse)
+      : undefined;
     return message;
   },
 };
@@ -8916,7 +9068,7 @@ export const GetDevicePublicKeysByIdentitiesResponse_ResultEntry: MessageFns<
 };
 
 function createBaseRotateChatVersion(): RotateChatVersion {
-  return { chatId: "", account: "", symKeyEncrypted: {} };
+  return { chatId: "", account: "", symKeyEncrypted: {}, expectedVersion: 0 };
 }
 
 export const RotateChatVersion: MessageFns<RotateChatVersion> = {
@@ -8930,6 +9082,9 @@ export const RotateChatVersion: MessageFns<RotateChatVersion> = {
     globalThis.Object.entries(message.symKeyEncrypted).forEach(([key, value]: [string, AccountSymKeys]) => {
       RotateChatVersion_SymKeyEncryptedEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
     });
+    if (message.expectedVersion !== 0) {
+      writer.uint32(32).uint64(message.expectedVersion);
+    }
     return writer;
   },
 
@@ -8967,6 +9122,14 @@ export const RotateChatVersion: MessageFns<RotateChatVersion> = {
           }
           continue;
         }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.expectedVersion = longToNumber(reader.uint64());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -9001,6 +9164,11 @@ export const RotateChatVersion: MessageFns<RotateChatVersion> = {
           {},
         )
         : {},
+      expectedVersion: isSet(object.expectedVersion)
+        ? globalThis.Number(object.expectedVersion)
+        : isSet(object.expected_version)
+        ? globalThis.Number(object.expected_version)
+        : 0,
     };
   },
 
@@ -9021,6 +9189,9 @@ export const RotateChatVersion: MessageFns<RotateChatVersion> = {
         });
       }
     }
+    if (message.expectedVersion !== 0) {
+      obj.expectedVersion = Math.round(message.expectedVersion);
+    }
     return obj;
   },
 
@@ -9038,6 +9209,7 @@ export const RotateChatVersion: MessageFns<RotateChatVersion> = {
         }
         return acc;
       }, {});
+    message.expectedVersion = object.expectedVersion ?? 0;
     return message;
   },
 };
@@ -10096,7 +10268,7 @@ export const EditContent: MessageFns<EditContent> = {
 };
 
 function createBaseDevice(): Device {
-  return { deviceId: "", devicePubHex: "" };
+  return { deviceId: "", devicePubHex: "", status: "", revokedAt: 0, revocationEpoch: 0, lastSeenAt: 0, platform: "" };
 }
 
 export const Device: MessageFns<Device> = {
@@ -10106,6 +10278,21 @@ export const Device: MessageFns<Device> = {
     }
     if (message.devicePubHex !== "") {
       writer.uint32(18).string(message.devicePubHex);
+    }
+    if (message.status !== "") {
+      writer.uint32(26).string(message.status);
+    }
+    if (message.revokedAt !== 0) {
+      writer.uint32(32).int64(message.revokedAt);
+    }
+    if (message.revocationEpoch !== 0) {
+      writer.uint32(40).uint64(message.revocationEpoch);
+    }
+    if (message.lastSeenAt !== 0) {
+      writer.uint32(48).int64(message.lastSeenAt);
+    }
+    if (message.platform !== "") {
+      writer.uint32(58).string(message.platform);
     }
     return writer;
   },
@@ -10133,6 +10320,46 @@ export const Device: MessageFns<Device> = {
           message.devicePubHex = reader.string();
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.status = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.revokedAt = longToNumber(reader.int64());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.revocationEpoch = longToNumber(reader.uint64());
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.lastSeenAt = longToNumber(reader.int64());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.platform = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -10154,6 +10381,23 @@ export const Device: MessageFns<Device> = {
         : isSet(object.device_pub_hex)
         ? globalThis.String(object.device_pub_hex)
         : "",
+      status: isSet(object.status) ? globalThis.String(object.status) : "",
+      revokedAt: isSet(object.revokedAt)
+        ? globalThis.Number(object.revokedAt)
+        : isSet(object.revoked_at)
+        ? globalThis.Number(object.revoked_at)
+        : 0,
+      revocationEpoch: isSet(object.revocationEpoch)
+        ? globalThis.Number(object.revocationEpoch)
+        : isSet(object.revocation_epoch)
+        ? globalThis.Number(object.revocation_epoch)
+        : 0,
+      lastSeenAt: isSet(object.lastSeenAt)
+        ? globalThis.Number(object.lastSeenAt)
+        : isSet(object.last_seen_at)
+        ? globalThis.Number(object.last_seen_at)
+        : 0,
+      platform: isSet(object.platform) ? globalThis.String(object.platform) : "",
     };
   },
 
@@ -10165,6 +10409,21 @@ export const Device: MessageFns<Device> = {
     if (message.devicePubHex !== "") {
       obj.devicePubHex = message.devicePubHex;
     }
+    if (message.status !== "") {
+      obj.status = message.status;
+    }
+    if (message.revokedAt !== 0) {
+      obj.revokedAt = Math.round(message.revokedAt);
+    }
+    if (message.revocationEpoch !== 0) {
+      obj.revocationEpoch = Math.round(message.revocationEpoch);
+    }
+    if (message.lastSeenAt !== 0) {
+      obj.lastSeenAt = Math.round(message.lastSeenAt);
+    }
+    if (message.platform !== "") {
+      obj.platform = message.platform;
+    }
     return obj;
   },
 
@@ -10175,6 +10434,11 @@ export const Device: MessageFns<Device> = {
     const message = createBaseDevice();
     message.deviceId = object.deviceId ?? "";
     message.devicePubHex = object.devicePubHex ?? "";
+    message.status = object.status ?? "";
+    message.revokedAt = object.revokedAt ?? 0;
+    message.revocationEpoch = object.revocationEpoch ?? 0;
+    message.lastSeenAt = object.lastSeenAt ?? 0;
+    message.platform = object.platform ?? "";
     return message;
   },
 };
@@ -10411,6 +10675,293 @@ export const RegisterDeviceResponse: MessageFns<RegisterDeviceResponse> = {
   },
 };
 
+function createBaseListDevices(): ListDevices {
+  return {};
+}
+
+export const ListDevices: MessageFns<ListDevices> = {
+  encode(_: ListDevices, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListDevices {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListDevices();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): ListDevices {
+    return {};
+  },
+
+  toJSON(_: ListDevices): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListDevices>, I>>(base?: I): ListDevices {
+    return ListDevices.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListDevices>, I>>(_: I): ListDevices {
+    const message = createBaseListDevices();
+    return message;
+  },
+};
+
+function createBaseListDevicesResponse(): ListDevicesResponse {
+  return { status: undefined, devices: [] };
+}
+
+export const ListDevicesResponse: MessageFns<ListDevicesResponse> = {
+  encode(message: ListDevicesResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    for (const v of message.devices) {
+      Device.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListDevicesResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListDevicesResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.devices.push(Device.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListDevicesResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      devices: globalThis.Array.isArray(object?.devices) ? object.devices.map((e: any) => Device.fromJSON(e)) : [],
+    };
+  },
+
+  toJSON(message: ListDevicesResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.devices?.length) {
+      obj.devices = message.devices.map((e) => Device.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListDevicesResponse>, I>>(base?: I): ListDevicesResponse {
+    return ListDevicesResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListDevicesResponse>, I>>(object: I): ListDevicesResponse {
+    const message = createBaseListDevicesResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.devices = object.devices?.map((e) => Device.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseRevokeDevice(): RevokeDevice {
+  return { deviceId: "" };
+}
+
+export const RevokeDevice: MessageFns<RevokeDevice> = {
+  encode(message: RevokeDevice, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.deviceId !== "") {
+      writer.uint32(10).string(message.deviceId);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RevokeDevice {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRevokeDevice();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.deviceId = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RevokeDevice {
+    return {
+      deviceId: isSet(object.deviceId)
+        ? globalThis.String(object.deviceId)
+        : isSet(object.device_id)
+        ? globalThis.String(object.device_id)
+        : "",
+    };
+  },
+
+  toJSON(message: RevokeDevice): unknown {
+    const obj: any = {};
+    if (message.deviceId !== "") {
+      obj.deviceId = message.deviceId;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<RevokeDevice>, I>>(base?: I): RevokeDevice {
+    return RevokeDevice.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RevokeDevice>, I>>(object: I): RevokeDevice {
+    const message = createBaseRevokeDevice();
+    message.deviceId = object.deviceId ?? "";
+    return message;
+  },
+};
+
+function createBaseRevokeDeviceResponse(): RevokeDeviceResponse {
+  return { status: undefined, deviceId: "", revocationEpoch: 0 };
+}
+
+export const RevokeDeviceResponse: MessageFns<RevokeDeviceResponse> = {
+  encode(message: RevokeDeviceResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.deviceId !== "") {
+      writer.uint32(18).string(message.deviceId);
+    }
+    if (message.revocationEpoch !== 0) {
+      writer.uint32(24).uint64(message.revocationEpoch);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): RevokeDeviceResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseRevokeDeviceResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.deviceId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.revocationEpoch = longToNumber(reader.uint64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): RevokeDeviceResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      deviceId: isSet(object.deviceId)
+        ? globalThis.String(object.deviceId)
+        : isSet(object.device_id)
+        ? globalThis.String(object.device_id)
+        : "",
+      revocationEpoch: isSet(object.revocationEpoch)
+        ? globalThis.Number(object.revocationEpoch)
+        : isSet(object.revocation_epoch)
+        ? globalThis.Number(object.revocation_epoch)
+        : 0,
+    };
+  },
+
+  toJSON(message: RevokeDeviceResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.deviceId !== "") {
+      obj.deviceId = message.deviceId;
+    }
+    if (message.revocationEpoch !== 0) {
+      obj.revocationEpoch = Math.round(message.revocationEpoch);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<RevokeDeviceResponse>, I>>(base?: I): RevokeDeviceResponse {
+    return RevokeDeviceResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<RevokeDeviceResponse>, I>>(object: I): RevokeDeviceResponse {
+    const message = createBaseRevokeDeviceResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.deviceId = object.deviceId ?? "";
+    message.revocationEpoch = object.revocationEpoch ?? 0;
+    return message;
+  },
+};
+
 function createBaseAuth(): Auth {
   return { identity: undefined, proof: undefined, device: undefined };
 }
@@ -10518,6 +11069,7 @@ function createBaseAccessInfo(): AccessInfo {
     invitedBy: "",
     subscriptions: [],
     isRestricted: false,
+    maxDevices: undefined,
   };
 }
 
@@ -10543,6 +11095,9 @@ export const AccessInfo: MessageFns<AccessInfo> = {
     }
     if (message.isRestricted !== false) {
       writer.uint32(56).bool(message.isRestricted);
+    }
+    if (message.maxDevices !== undefined) {
+      writer.uint32(64).int64(message.maxDevices);
     }
     return writer;
   },
@@ -10610,6 +11165,14 @@ export const AccessInfo: MessageFns<AccessInfo> = {
           message.isRestricted = reader.bool();
           continue;
         }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.maxDevices = longToNumber(reader.int64());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -10648,6 +11211,11 @@ export const AccessInfo: MessageFns<AccessInfo> = {
         : isSet(object.is_restricted)
         ? globalThis.Boolean(object.is_restricted)
         : false,
+      maxDevices: isSet(object.maxDevices)
+        ? globalThis.Number(object.maxDevices)
+        : isSet(object.max_devices)
+        ? globalThis.Number(object.max_devices)
+        : undefined,
     };
   },
 
@@ -10674,6 +11242,9 @@ export const AccessInfo: MessageFns<AccessInfo> = {
     if (message.isRestricted !== false) {
       obj.isRestricted = message.isRestricted;
     }
+    if (message.maxDevices !== undefined) {
+      obj.maxDevices = Math.round(message.maxDevices);
+    }
     return obj;
   },
 
@@ -10689,6 +11260,7 @@ export const AccessInfo: MessageFns<AccessInfo> = {
     message.invitedBy = object.invitedBy ?? "";
     message.subscriptions = object.subscriptions?.map((e) => Subscription.fromPartial(e)) || [];
     message.isRestricted = object.isRestricted ?? false;
+    message.maxDevices = object.maxDevices ?? undefined;
     return message;
   },
 };
@@ -11728,6 +12300,8 @@ function createBaseChatInfo(): ChatInfo {
     createdAt: 0,
     symKeyEncrypted: {},
     pendingJoinRequests: [],
+    currentKeyEpoch: 0,
+    requiredKeyEpoch: 0,
   };
 }
 
@@ -11759,6 +12333,12 @@ export const ChatInfo: MessageFns<ChatInfo> = {
     });
     for (const v of message.pendingJoinRequests) {
       writer.uint32(74).string(v!);
+    }
+    if (message.currentKeyEpoch !== 0) {
+      writer.uint32(80).uint64(message.currentKeyEpoch);
+    }
+    if (message.requiredKeyEpoch !== 0) {
+      writer.uint32(88).uint64(message.requiredKeyEpoch);
     }
     return writer;
   },
@@ -11845,6 +12425,22 @@ export const ChatInfo: MessageFns<ChatInfo> = {
           message.pendingJoinRequests.push(reader.string());
           continue;
         }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.currentKeyEpoch = longToNumber(reader.uint64());
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.requiredKeyEpoch = longToNumber(reader.uint64());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -11903,6 +12499,16 @@ export const ChatInfo: MessageFns<ChatInfo> = {
         : globalThis.Array.isArray(object?.pending_join_requests)
         ? object.pending_join_requests.map((e: any) => globalThis.String(e))
         : [],
+      currentKeyEpoch: isSet(object.currentKeyEpoch)
+        ? globalThis.Number(object.currentKeyEpoch)
+        : isSet(object.current_key_epoch)
+        ? globalThis.Number(object.current_key_epoch)
+        : 0,
+      requiredKeyEpoch: isSet(object.requiredKeyEpoch)
+        ? globalThis.Number(object.requiredKeyEpoch)
+        : isSet(object.required_key_epoch)
+        ? globalThis.Number(object.required_key_epoch)
+        : 0,
     };
   },
 
@@ -11941,6 +12547,12 @@ export const ChatInfo: MessageFns<ChatInfo> = {
     if (message.pendingJoinRequests?.length) {
       obj.pendingJoinRequests = message.pendingJoinRequests;
     }
+    if (message.currentKeyEpoch !== 0) {
+      obj.currentKeyEpoch = Math.round(message.currentKeyEpoch);
+    }
+    if (message.requiredKeyEpoch !== 0) {
+      obj.requiredKeyEpoch = Math.round(message.requiredKeyEpoch);
+    }
     return obj;
   },
 
@@ -11964,6 +12576,8 @@ export const ChatInfo: MessageFns<ChatInfo> = {
         return acc;
       }, {});
     message.pendingJoinRequests = object.pendingJoinRequests?.map((e) => e) || [];
+    message.currentKeyEpoch = object.currentKeyEpoch ?? 0;
+    message.requiredKeyEpoch = object.requiredKeyEpoch ?? 0;
     return message;
   },
 };

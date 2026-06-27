@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   EvergramAccessDeniedError,
   EvergramAuthError,
+  EvergramDeviceRevokedError,
   EvergramError,
   EvergramNotFoundError,
   EvergramRateLimitError,
   EvergramRestrictedError,
+  EvergramRotationError,
   EvergramValidationError,
   errorFromCode,
 } from "../../src/errors";
@@ -39,6 +41,14 @@ describe("errorFromCode", () => {
     ["last_admin_protection", EvergramValidationError],
     ["founder_protection", EvergramValidationError],
     ["ALREADY_PARTICIPANT", EvergramValidationError],
+    // Device revocation: deliberately NOT EvergramAuthError on either of
+    // these — requestWithReauth only retries EvergramAuthError, and
+    // reconnect-and-retry can't fix a revoked device or a stale chat
+    // version (see src/errors.ts's comments on these two classes).
+    ["device_revoked", EvergramDeviceRevokedError],
+    ["rotation_conflict", EvergramRotationError],
+    ["rotation_required", EvergramRotationError],
+    ["ROTATION_REQUIRED", EvergramRotationError],
   ])("maps %s to %s", (code, ErrorClass) => {
     const err = errorFromCode(code);
     expect(err).toBeInstanceOf(ErrorClass);

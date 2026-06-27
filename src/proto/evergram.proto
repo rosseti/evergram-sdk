@@ -123,6 +123,9 @@ message ClientMessage {
     GetWidgetInfo get_widget_info = 47;
 
     CreateVisitorRoom create_visitor_room = 48;
+
+    RevokeDevice revoke_device = 49;
+    ListDevices  list_devices  = 50;
   }
 }
 
@@ -541,6 +544,9 @@ message ServerMessage {
     CreateVisitorRoomResponse  create_visitor_room_response   = 55;
     VisitorRoomRequestedEvent  visitor_room_requested_event   = 56;
     VisitorRoomTimedOutEvent   visitor_room_timed_out_event   = 57;
+
+    RevokeDeviceResponse revoke_device_response = 58;
+    ListDevicesResponse  list_devices_response   = 59;
   }
 }
 
@@ -563,6 +569,10 @@ message RotateChatVersion {
   string                      chat_id           = 1;
   string                      account           = 2;
   map<string, AccountSymKeys> sym_key_encrypted = 3;
+  // The caller's last-known chat_version. The contract rejects a stale value
+  // with "rotation_conflict" instead of silently overwriting a concurrent
+  // rotation's key.
+  uint64                      expected_version  = 4;
 }
 
 message RotateChatVersionResponse {
@@ -638,6 +648,19 @@ message EditContent {
 message Device {
   string device_id      = 1;
   string device_pub_hex = 2;
+
+  // Populated only in device-listing responses (RegisterDeviceResponse.devices,
+  // ListDevicesResponse.devices) — empty/zero on every other use of this
+  // message (Envelope.device, Auth.device, etc.), which always describe the
+  // calling connection's own current device.
+  string status            = 3; // "registered" | "revoked"
+  int64  revoked_at        = 4;
+  uint64 revocation_epoch  = 5;
+  int64  last_seen_at      = 6;
+
+  // platform: client self-declared (e.g. "Chrome · Ubuntu", "Terminal").
+  // Input on Auth/RegisterDevice.device; echoed back on every response.
+  string platform = 7;
 }
 
 message RegisterDevice {
@@ -652,6 +675,26 @@ message RegisterDeviceResponse {
   string            device_id        = 3;
   repeated Device   devices          = 4;
   repeated ChatInfo rotated_sym_keys = 5;
+}
+
+// Read-only refresh of the caller's own device list — lets the UI re-list
+// right after a revoke without going through registerDevice again.
+message ListDevices {
+}
+
+message ListDevicesResponse {
+  ResponseStatus  status  = 1;
+  repeated Device devices = 2;
+}
+
+message RevokeDevice {
+  string device_id = 1;
+}
+
+message RevokeDeviceResponse {
+  ResponseStatus status           = 1;
+  string         device_id        = 2;
+  uint64         revocation_epoch = 3;
 }
 
 message Auth {
@@ -669,6 +712,10 @@ message AccessInfo {
 
   repeated Subscription subscriptions = 6;
   bool                  is_restricted = 7;
+
+  // From access.config.json's per-tier limits.devices — absent means no
+  // limit is enforced (e.g. admin's "*": null tier config), not zero.
+  optional int64 max_devices = 8;
 }
 
 message AuthResponse {
@@ -743,6 +790,13 @@ message ChatInfo {
   map<string, AccountSymKeys> sym_key_encrypted = 8;
 
   repeated string pending_join_requests = 9;
+
+  // Raw epoch numbers, not a precomputed boolean — a boolean can't express
+  // "how far behind", these can. needsRekey = current_key_epoch <
+  // required_key_epoch is derived client-side. See contract's
+  // handleGetChat/queryChats and the device-revocation design doc.
+  uint64 current_key_epoch  = 10;
+  uint64 required_key_epoch = 11;
 }
 
 message AccountSymKeys {

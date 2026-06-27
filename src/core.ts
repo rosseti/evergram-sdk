@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import os from "node:os";
 import {
   ChainFamily,
   ChatInfo,
@@ -24,6 +25,7 @@ import {
 import {
   EvergramAuthError,
   EvergramNotFoundError,
+  EvergramRotationError,
   EvergramTimeoutError,
   EvergramValidationError,
   errorFromCode,
@@ -49,6 +51,29 @@ import { decodeRelayPayload, encodeRelayPayload, fromWireKind, RelayMessageKind,
 // (envelope arrives just before the chat's key push).
 const MAX_PENDING_ENVELOPES_PER_CHAT = 500;
 
+// Bounds pendingSends (see sendMessage's rotation-required retry below) for
+// a long-running bot whose DELIVERY outcome for some message never arrives
+// (dropped connection mid-flight, lost event, etc.) — same rationale as
+// MAX_PENDING_ENVELOPES_PER_CHAT above. Each entry is normally removed the
+// moment that message's outcome is known, so this only bounds the leak
+// case, not the happy path.
+const MAX_PENDING_SENDS = 1000;
+
+// Mirrors the OS family naming the webapp's platform-label.ts already uses
+// for the "{Browser} · {OS}" convention (Preferences > Devices), so the
+// device owner sees a consistent OS name regardless of which client
+// connected. os.platform() has more values than this (freebsd, sunos,
+// aix, ...) — those are rare enough for a bot host that the raw Node value
+// is left as-is rather than guessing a display name for them.
+function osFamily(): string {
+  switch (os.platform()) {
+    case "win32": return "Windows";
+    case "darwin": return "macOS";
+    case "linux": return "Linux";
+    default: return os.platform();
+  }
+}
+
 export interface EvergramDevice {
   deviceId: string;
   devicePubHex: string;
@@ -67,6 +92,14 @@ export interface EvergramCoreOptions {
    * losing access to chat history, same limitation the webapp client has.
    */
   device: EvergramDevice;
+  /**
+   * Self-declared platform/client label shown in the device owner's
+   * Preferences > Devices list (Baileys-style, e.g. `Browsers.ubuntu`) —
+   * the gateway never infers this from a User-Agent for bot connections.
+   * Defaults to `"Terminal · " + osFamily()` (e.g. "Terminal · Linux"),
+   * auto-detected via Node's `os.platform()` — see osFamily() below.
+   */
+  platform?: string;
   /** Mirrors the contract's EVERGRAM_MAX_PARTICIPANTS (default 100). */
   maxParticipants?: number;
   /**
@@ -194,6 +227,7 @@ export class EvergramCore extends EventEmitter {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
   private readonly device: EvergramDevice;
+  private readonly platformLabel: string;
   private readonly identity = { chainFamily: ChainFamily.XRPL, address: "" } as { chainFamily: ChainFamily; address: string };
   private readonly selfIdentityKey: string;
   private readonly maxParticipants: number;
@@ -204,6 +238,15 @@ export class EvergramCore extends EventEmitter {
   private readonly chats = new Map<string, ChatInfo>();
   private readonly symKeys = new Map<string, Uint8Array>();
   private readonly pendingEnvelopes = new Map<string, Envelope[]>();
+  // Tracks in-flight sendMessage() calls by their own msgId so a later
+  // ROTATION_REQUIRED delivery failure can rotate the chat key and resend
+  // the original plaintext — see handleEnvelope's DELIVERY branch and
+  // retrySendOnRotationRequired(). Removed as soon as that msgId's outcome
+  // (success, non-rotation failure, or retry exhausted) is known.
+  private readonly pendingSends = new Map<
+    string,
+    { chatId: string; text: string; opts?: { replyToMsgId?: string }; retried: boolean }
+  >();
   private readonly pendingChatRequests = new Map<string, PendingChatRequest>();
   private readonly pendingGroupInvites = new Map<string, PendingGroupInvite>();
   // Live widget-visitor relay sessions this process is currently a party
@@ -231,6 +274,7 @@ export class EvergramCore extends EventEmitter {
 
     this.wallet = opts.wallet;
     this.device = opts.device;
+    this.platformLabel = opts.platform || `Terminal · ${osFamily()}`;
     this.assertDeviceKeypairValid(opts.device);
     this.identity.address = opts.wallet.address;
     this.selfIdentityKey = identityKey(this.identity as any);
@@ -316,7 +360,7 @@ export class EvergramCore extends EventEmitter {
       auth: {
         identity: this.identity,
         proof: { signedMessage: proof },
-        device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+        device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex, platform: this.platformLabel },
       },
     });
 
@@ -327,7 +371,7 @@ export class EvergramCore extends EventEmitter {
         const registerMsg = ClientMessage.create({
           registerDevice: {
             identity: this.identity,
-            device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+            device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex, platform: this.platformLabel },
           },
         });
         await this.request(registerMsg, "registerDeviceResponse");
@@ -342,7 +386,7 @@ export class EvergramCore extends EventEmitter {
     const msg = ClientMessage.create({
       registerDevice: {
         identity: this.identity,
-        device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex },
+        device: { deviceId: this.device.deviceId, devicePubHex: this.device.devicePubHex, platform: this.platformLabel },
       },
     });
 
@@ -482,7 +526,83 @@ export class EvergramCore extends EventEmitter {
 
     this.transport.send(ClientMessage.create({ envelope: env }));
 
+    this.trackPendingSend(msgId, chatId, text, opts);
+
     return { chatId, msgId, ts: env.ts };
+  }
+
+  private trackPendingSend(
+    msgId: string,
+    chatId: string,
+    text: string,
+    opts?: { replyToMsgId?: string },
+    retried = false
+  ): void {
+    if (this.pendingSends.size >= MAX_PENDING_SENDS) {
+      const oldest = this.pendingSends.keys().next().value;
+      if (oldest !== undefined) this.pendingSends.delete(oldest);
+    }
+
+    this.pendingSends.set(msgId, { chatId, text, opts, retried });
+  }
+
+  // Bounded to a single retry (maxRotationRetries = 1, same convention as
+  // the webapp client — see the device-revocation design doc's protocol
+  // invariants): rotate the chat's key once, then resend the original
+  // plaintext once under the new key. A second ROTATION_REQUIRED after that
+  // surfaces as a normal "delivery" failure plus an "error" event instead
+  // of looping. Returns true if this delivery outcome was swallowed
+  // (because a retry is in flight, or has just been finalized as an error
+  // here) — false means "not ours, let the normal delivery event through".
+  //
+  // Note: the resend gets a brand-new msgId (generateMsgId() inside
+  // sendMessage) — there's no way to resend under the original msgId since
+  // the message is being re-encrypted under a different chat key. A bot
+  // author tracking delivery by the msgId sendMessage() first returned will
+  // not see a later success event for it; they will see the original
+  // msgId's eventual failure if the single retry is also rejected.
+  private retrySendOnRotationRequired(msgId: string): boolean {
+    const pending = this.pendingSends.get(msgId);
+    if (!pending) return false;
+
+    this.pendingSends.delete(msgId);
+
+    if (pending.retried) {
+      const err = new EvergramRotationError(
+        "rotation_required",
+        `Message ${msgId} could not be delivered after one rotate-and-retry attempt`
+      );
+      this.emit("error", err);
+      this.emit("delivery", {
+        chatId: pending.chatId,
+        msgId,
+        status: { ok: false, code: "ROTATION_REQUIRED", message: err.message },
+        eventType: "SEND",
+      });
+      return true;
+    }
+
+    (async () => {
+      try {
+        await this.rotateChatVersion(pending.chatId);
+        const resent = await this.sendMessage(pending.chatId, pending.text, pending.opts);
+        const resentEntry = this.pendingSends.get(resent.msgId);
+        if (resentEntry) resentEntry.retried = true;
+      } catch (err) {
+        const evergramErr = err instanceof Error
+          ? err
+          : new EvergramRotationError("rotation_required", String(err));
+        this.emit("error", evergramErr);
+        this.emit("delivery", {
+          chatId: pending.chatId,
+          msgId,
+          status: { ok: false, code: "ROTATION_REQUIRED", message: evergramErr.message },
+          eventType: "SEND",
+        });
+      }
+    })();
+
+    return true;
   }
 
   // Fire-and-forget, like sendMessage above — no encryption (typing state
@@ -627,6 +747,17 @@ export class EvergramCore extends EventEmitter {
   async leaveChat(chatId: string) {
     const msg = ClientMessage.create({ leaveChat: { chatId } });
     return this.requestWithReauth(msg, "leaveChatResponse");
+  }
+
+  // The gateway does the actual key generation/wrapping server-side (it
+  // reads current participants + chatVersion fresh, generates a symKey, and
+  // seals it per device's public key — see webapp's
+  // gateway/handlers/inbound/rotateChatVersion.ts) — the SDK only needs to
+  // ask for it. processChatInfo() (via handlePush) updates this.symKeys
+  // from the resulting rotateChatVersionResponse before this call resolves.
+  async rotateChatVersion(chatId: string) {
+    const msg = ClientMessage.create({ rotateChatVersion: { chatId } });
+    return this.requestWithReauth(msg, "rotateChatVersionResponse");
   }
 
   async getProfile(remoteIdentity: string) {
@@ -1189,6 +1320,17 @@ export class EvergramCore extends EventEmitter {
     } else if (env.type === "TYPING") {
       this.emit("typing", { chatId: env.chatId, sender: env.sender, isTyping: !!env.typing?.isTyping });
     } else if (env.type === "DELIVERY" && env.delivery) {
+      const isSendEvent = !env.delivery.eventType || env.delivery.eventType === "SEND";
+
+      if (isSendEvent && env.delivery.status?.code === "ROTATION_REQUIRED") {
+        // Swallowed here (and replaced by a resend, or a terminal error
+        // event) rather than falling through to the plain "delivery"
+        // failure below — see retrySendOnRotationRequired().
+        if (this.retrySendOnRotationRequired(env.delivery.msgId)) return;
+      } else if (isSendEvent) {
+        this.pendingSends.delete(env.delivery.msgId);
+      }
+
       // eventType ("SEND"/"REACT"/"EDIT") lets a bot author tell "my
       // original message failed to send" apart from "a later react/edit/
       // delete attempt on it was rejected" — reactToMessage()/editMessage()/
