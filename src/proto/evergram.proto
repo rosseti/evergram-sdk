@@ -1024,8 +1024,12 @@ message CheckBlockedResponse {
 }
 
 message GetProfileResponse {
-  ResponseStatus status  = 1;
-  Profile        profile = 2;
+  ResponseStatus status          = 1;
+  Profile        profile         = 2;
+  // Echoes the identity that was queried, so a caller can resolve the
+  // matching profileWaiters entry even when status.ok is false (profile not
+  // found has no Profile to read an identity back out of otherwise).
+  ChainIdentity  remote_identity = 3;
 }
 
 message GrantBetaAccess {

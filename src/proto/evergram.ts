@@ -1258,7 +1258,15 @@ export interface CheckBlockedResponse {
 
 export interface GetProfileResponse {
   status: ResponseStatus | undefined;
-  profile: Profile | undefined;
+  profile:
+    | Profile
+    | undefined;
+  /**
+   * Echoes the identity that was queried, so a caller can resolve the
+   * matching profileWaiters entry even when status.ok is false (profile not
+   * found has no Profile to read an identity back out of otherwise).
+   */
+  remoteIdentity: ChainIdentity | undefined;
 }
 
 export interface GrantBetaAccess {
@@ -15979,7 +15987,7 @@ export const CheckBlockedResponse: MessageFns<CheckBlockedResponse> = {
 };
 
 function createBaseGetProfileResponse(): GetProfileResponse {
-  return { status: undefined, profile: undefined };
+  return { status: undefined, profile: undefined, remoteIdentity: undefined };
 }
 
 export const GetProfileResponse: MessageFns<GetProfileResponse> = {
@@ -15989,6 +15997,9 @@ export const GetProfileResponse: MessageFns<GetProfileResponse> = {
     }
     if (message.profile !== undefined) {
       Profile.encode(message.profile, writer.uint32(18).fork()).join();
+    }
+    if (message.remoteIdentity !== undefined) {
+      ChainIdentity.encode(message.remoteIdentity, writer.uint32(26).fork()).join();
     }
     return writer;
   },
@@ -16016,6 +16027,14 @@ export const GetProfileResponse: MessageFns<GetProfileResponse> = {
           message.profile = Profile.decode(reader, reader.uint32());
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.remoteIdentity = ChainIdentity.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -16029,6 +16048,11 @@ export const GetProfileResponse: MessageFns<GetProfileResponse> = {
     return {
       status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
       profile: isSet(object.profile) ? Profile.fromJSON(object.profile) : undefined,
+      remoteIdentity: isSet(object.remoteIdentity)
+        ? ChainIdentity.fromJSON(object.remoteIdentity)
+        : isSet(object.remote_identity)
+        ? ChainIdentity.fromJSON(object.remote_identity)
+        : undefined,
     };
   },
 
@@ -16039,6 +16063,9 @@ export const GetProfileResponse: MessageFns<GetProfileResponse> = {
     }
     if (message.profile !== undefined) {
       obj.profile = Profile.toJSON(message.profile);
+    }
+    if (message.remoteIdentity !== undefined) {
+      obj.remoteIdentity = ChainIdentity.toJSON(message.remoteIdentity);
     }
     return obj;
   },
@@ -16053,6 +16080,9 @@ export const GetProfileResponse: MessageFns<GetProfileResponse> = {
       : undefined;
     message.profile = (object.profile !== undefined && object.profile !== null)
       ? Profile.fromPartial(object.profile)
+      : undefined;
+    message.remoteIdentity = (object.remoteIdentity !== undefined && object.remoteIdentity !== null)
+      ? ChainIdentity.fromPartial(object.remoteIdentity)
       : undefined;
     return message;
   },
