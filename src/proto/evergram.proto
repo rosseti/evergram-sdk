@@ -126,6 +126,8 @@ message ClientMessage {
 
     RevokeDevice revoke_device = 49;
     ListDevices  list_devices  = 50;
+
+    DenyJoinRequest deny_join_request = 51;
   }
 }
 
@@ -452,6 +454,23 @@ message JoinRequestedEvent {
   int64  ts       = 4;
 }
 
+message DenyJoinRequest {
+  string chat_id         = 1;
+  string remote_identity = 2;
+}
+
+message DenyJoinResponse {
+  ResponseStatus status          = 1;
+  string         chat_id         = 2;
+  string         remote_identity = 3;
+  string         name            = 4;
+}
+
+message JoinDeniedEvent {
+  string chat_id = 1;
+  string name    = 2;
+}
+
 message SetChatDiscoverable {
   string chat_id      = 1;
   bool   discoverable = 2;
@@ -562,6 +581,10 @@ message ServerMessage {
 
     RevokeDeviceResponse revoke_device_response = 58;
     ListDevicesResponse  list_devices_response   = 59;
+
+    DenyJoinResponse deny_join_response = 60;
+
+    JoinDeniedEvent join_denied_event = 61;
   }
 }
 

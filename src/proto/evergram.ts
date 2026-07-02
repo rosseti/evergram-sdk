@@ -292,6 +292,7 @@ export interface ClientMessage {
   createVisitorRoom?: CreateVisitorRoom | undefined;
   revokeDevice?: RevokeDevice | undefined;
   listDevices?: ListDevices | undefined;
+  denyJoinRequest?: DenyJoinRequest | undefined;
 }
 
 /**
@@ -594,6 +595,23 @@ export interface JoinRequestedEvent {
   ts: number;
 }
 
+export interface DenyJoinRequest {
+  chatId: string;
+  remoteIdentity: string;
+}
+
+export interface DenyJoinResponse {
+  status: ResponseStatus | undefined;
+  chatId: string;
+  remoteIdentity: string;
+  name: string;
+}
+
+export interface JoinDeniedEvent {
+  chatId: string;
+  name: string;
+}
+
 export interface SetChatDiscoverable {
   chatId: string;
   discoverable: boolean;
@@ -689,6 +707,8 @@ export interface ServerMessage {
   visitorRoomTimedOutEvent?: VisitorRoomTimedOutEvent | undefined;
   revokeDeviceResponse?: RevokeDeviceResponse | undefined;
   listDevicesResponse?: ListDevicesResponse | undefined;
+  denyJoinResponse?: DenyJoinResponse | undefined;
+  joinDeniedEvent?: JoinDeniedEvent | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -2025,6 +2045,7 @@ function createBaseClientMessage(): ClientMessage {
     createVisitorRoom: undefined,
     revokeDevice: undefined,
     listDevices: undefined,
+    denyJoinRequest: undefined,
   };
 }
 
@@ -2176,6 +2197,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.listDevices !== undefined) {
       ListDevices.encode(message.listDevices, writer.uint32(402).fork()).join();
+    }
+    if (message.denyJoinRequest !== undefined) {
+      DenyJoinRequest.encode(message.denyJoinRequest, writer.uint32(410).fork()).join();
     }
     return writer;
   },
@@ -2579,6 +2603,14 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.listDevices = ListDevices.decode(reader, reader.uint32());
           continue;
         }
+        case 51: {
+          if (tag !== 410) {
+            break;
+          }
+
+          message.denyJoinRequest = DenyJoinRequest.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2823,6 +2855,11 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.list_devices)
         ? ListDevices.fromJSON(object.list_devices)
         : undefined,
+      denyJoinRequest: isSet(object.denyJoinRequest)
+        ? DenyJoinRequest.fromJSON(object.denyJoinRequest)
+        : isSet(object.deny_join_request)
+        ? DenyJoinRequest.fromJSON(object.deny_join_request)
+        : undefined,
     };
   },
 
@@ -2975,6 +3012,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     if (message.listDevices !== undefined) {
       obj.listDevices = ListDevices.toJSON(message.listDevices);
     }
+    if (message.denyJoinRequest !== undefined) {
+      obj.denyJoinRequest = DenyJoinRequest.toJSON(message.denyJoinRequest);
+    }
     return obj;
   },
 
@@ -3126,6 +3166,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
       : undefined;
     message.listDevices = (object.listDevices !== undefined && object.listDevices !== null)
       ? ListDevices.fromPartial(object.listDevices)
+      : undefined;
+    message.denyJoinRequest = (object.denyJoinRequest !== undefined && object.denyJoinRequest !== null)
+      ? DenyJoinRequest.fromPartial(object.denyJoinRequest)
       : undefined;
     return message;
   },
@@ -6902,6 +6945,288 @@ export const JoinRequestedEvent: MessageFns<JoinRequestedEvent> = {
   },
 };
 
+function createBaseDenyJoinRequest(): DenyJoinRequest {
+  return { chatId: "", remoteIdentity: "" };
+}
+
+export const DenyJoinRequest: MessageFns<DenyJoinRequest> = {
+  encode(message: DenyJoinRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    if (message.remoteIdentity !== "") {
+      writer.uint32(18).string(message.remoteIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DenyJoinRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDenyJoinRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.remoteIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DenyJoinRequest {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      remoteIdentity: isSet(object.remoteIdentity)
+        ? globalThis.String(object.remoteIdentity)
+        : isSet(object.remote_identity)
+        ? globalThis.String(object.remote_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: DenyJoinRequest): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.remoteIdentity !== "") {
+      obj.remoteIdentity = message.remoteIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DenyJoinRequest>, I>>(base?: I): DenyJoinRequest {
+    return DenyJoinRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DenyJoinRequest>, I>>(object: I): DenyJoinRequest {
+    const message = createBaseDenyJoinRequest();
+    message.chatId = object.chatId ?? "";
+    message.remoteIdentity = object.remoteIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseDenyJoinResponse(): DenyJoinResponse {
+  return { status: undefined, chatId: "", remoteIdentity: "", name: "" };
+}
+
+export const DenyJoinResponse: MessageFns<DenyJoinResponse> = {
+  encode(message: DenyJoinResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.chatId !== "") {
+      writer.uint32(18).string(message.chatId);
+    }
+    if (message.remoteIdentity !== "") {
+      writer.uint32(26).string(message.remoteIdentity);
+    }
+    if (message.name !== "") {
+      writer.uint32(34).string(message.name);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DenyJoinResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDenyJoinResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.remoteIdentity = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DenyJoinResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      remoteIdentity: isSet(object.remoteIdentity)
+        ? globalThis.String(object.remoteIdentity)
+        : isSet(object.remote_identity)
+        ? globalThis.String(object.remote_identity)
+        : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+    };
+  },
+
+  toJSON(message: DenyJoinResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.remoteIdentity !== "") {
+      obj.remoteIdentity = message.remoteIdentity;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DenyJoinResponse>, I>>(base?: I): DenyJoinResponse {
+    return DenyJoinResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DenyJoinResponse>, I>>(object: I): DenyJoinResponse {
+    const message = createBaseDenyJoinResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.chatId = object.chatId ?? "";
+    message.remoteIdentity = object.remoteIdentity ?? "";
+    message.name = object.name ?? "";
+    return message;
+  },
+};
+
+function createBaseJoinDeniedEvent(): JoinDeniedEvent {
+  return { chatId: "", name: "" };
+}
+
+export const JoinDeniedEvent: MessageFns<JoinDeniedEvent> = {
+  encode(message: JoinDeniedEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    if (message.name !== "") {
+      writer.uint32(18).string(message.name);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): JoinDeniedEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseJoinDeniedEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): JoinDeniedEvent {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+    };
+  },
+
+  toJSON(message: JoinDeniedEvent): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<JoinDeniedEvent>, I>>(base?: I): JoinDeniedEvent {
+    return JoinDeniedEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<JoinDeniedEvent>, I>>(object: I): JoinDeniedEvent {
+    const message = createBaseJoinDeniedEvent();
+    message.chatId = object.chatId ?? "";
+    message.name = object.name ?? "";
+    return message;
+  },
+};
+
 function createBaseSetChatDiscoverable(): SetChatDiscoverable {
   return { chatId: "", discoverable: false, category: "" };
 }
@@ -7464,6 +7789,8 @@ function createBaseServerMessage(): ServerMessage {
     visitorRoomTimedOutEvent: undefined,
     revokeDeviceResponse: undefined,
     listDevicesResponse: undefined,
+    denyJoinResponse: undefined,
+    joinDeniedEvent: undefined,
   };
 }
 
@@ -7642,6 +7969,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.listDevicesResponse !== undefined) {
       ListDevicesResponse.encode(message.listDevicesResponse, writer.uint32(474).fork()).join();
+    }
+    if (message.denyJoinResponse !== undefined) {
+      DenyJoinResponse.encode(message.denyJoinResponse, writer.uint32(482).fork()).join();
+    }
+    if (message.joinDeniedEvent !== undefined) {
+      JoinDeniedEvent.encode(message.joinDeniedEvent, writer.uint32(490).fork()).join();
     }
     return writer;
   },
@@ -8117,6 +8450,22 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.listDevicesResponse = ListDevicesResponse.decode(reader, reader.uint32());
           continue;
         }
+        case 60: {
+          if (tag !== 482) {
+            break;
+          }
+
+          message.denyJoinResponse = DenyJoinResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 61: {
+          if (tag !== 490) {
+            break;
+          }
+
+          message.joinDeniedEvent = JoinDeniedEvent.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8406,6 +8755,16 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.list_devices_response)
         ? ListDevicesResponse.fromJSON(object.list_devices_response)
         : undefined,
+      denyJoinResponse: isSet(object.denyJoinResponse)
+        ? DenyJoinResponse.fromJSON(object.denyJoinResponse)
+        : isSet(object.deny_join_response)
+        ? DenyJoinResponse.fromJSON(object.deny_join_response)
+        : undefined,
+      joinDeniedEvent: isSet(object.joinDeniedEvent)
+        ? JoinDeniedEvent.fromJSON(object.joinDeniedEvent)
+        : isSet(object.join_denied_event)
+        ? JoinDeniedEvent.fromJSON(object.join_denied_event)
+        : undefined,
     };
   },
 
@@ -8586,6 +8945,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.listDevicesResponse !== undefined) {
       obj.listDevicesResponse = ListDevicesResponse.toJSON(message.listDevicesResponse);
+    }
+    if (message.denyJoinResponse !== undefined) {
+      obj.denyJoinResponse = DenyJoinResponse.toJSON(message.denyJoinResponse);
+    }
+    if (message.joinDeniedEvent !== undefined) {
+      obj.joinDeniedEvent = JoinDeniedEvent.toJSON(message.joinDeniedEvent);
     }
     return obj;
   },
@@ -8793,6 +9158,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       : undefined;
     message.listDevicesResponse = (object.listDevicesResponse !== undefined && object.listDevicesResponse !== null)
       ? ListDevicesResponse.fromPartial(object.listDevicesResponse)
+      : undefined;
+    message.denyJoinResponse = (object.denyJoinResponse !== undefined && object.denyJoinResponse !== null)
+      ? DenyJoinResponse.fromPartial(object.denyJoinResponse)
+      : undefined;
+    message.joinDeniedEvent = (object.joinDeniedEvent !== undefined && object.joinDeniedEvent !== null)
+      ? JoinDeniedEvent.fromPartial(object.joinDeniedEvent)
       : undefined;
     return message;
   },

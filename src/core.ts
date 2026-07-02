@@ -221,7 +221,7 @@ export interface EvergramVisitorRoomTimedOut {
 // Events: "connected", "authenticated", "disconnected", "reconnecting" (attempt),
 // "message" (EvergramChatMessage), "typing", "delivery", "chatKeyRotated" ({chatId}),
 // "reaction" (EvergramReaction), "messageEdited" (EvergramMessageEdited),
-// "messageDeleted" (EvergramMessageDeleted), "joinRequested" (JoinRequestedEvent),
+// "messageDeleted" (EvergramMessageDeleted), "joinRequested" (JoinRequestedEvent), "joinDenied" (JoinDeniedEvent),
 // "chatRequestReceived" (PendingChatRequest), "groupInviteReceived" (PendingGroupInvite),
 // "restricted" (ReputationUpdated), "error" (Error),
 // "visitorRoomRequested" (EvergramVisitorRoomRequested), "visitorMessage" (EvergramVisitorMessage),
@@ -819,6 +819,11 @@ export class EvergramCore extends EventEmitter {
     return this.requestWithReauth(msg, "requestJoinResponse");
   }
 
+  async denyJoinRequest(chatId: string, remoteIdentity: string) {
+    const msg = ClientMessage.create({ denyJoinRequest: { chatId, remoteIdentity } });
+    return this.requestWithReauth(msg, "denyJoinResponse");
+  }
+
   async setChatDiscoverable(chatId: string, discoverable: boolean, category?: string) {
     const msg = ClientMessage.create({ setChatDiscoverable: { chatId, discoverable, category } });
     return this.requestWithReauth(msg, "setChatDiscoverableResponse");
@@ -1248,6 +1253,10 @@ export class EvergramCore extends EventEmitter {
 
     if (msg.joinRequestedEvent) {
       this.emit("joinRequested", msg.joinRequestedEvent);
+    }
+
+    if (msg.joinDeniedEvent) {
+      this.emit("joinDenied", msg.joinDeniedEvent);
     }
 
     if (msg.visitorRoomRequestedEvent) {

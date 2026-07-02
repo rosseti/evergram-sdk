@@ -14,20 +14,13 @@ import {
   EvergramVisitorTyping,
 } from "./core";
 import { ChatInfo, JoinRequestedEvent, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
-import { EvergramError } from "./errors";
 import { EphemeralEditEvent, EphemeralRemoveEvent, EphemeralTextEvent } from "./ephemeral-relay-session";
 
 export interface JoinRequestHandle extends JoinRequestedEvent {
-  /** Adds the requester as a participant — the only accept path the protocol exposes today. */
+  /** Adds the requester as a participant. */
   approve(): Promise<unknown>;
-  /**
-   * The wire protocol has no reject/deny RPC (see contract's handleAddParticipant:
-   * the only way a pendingJoinRequests entry is cleared is by approving it).
-   * Calling this always throws — it exists so your bot's branching reads
-   * naturally (`if (...) req.approve(); else req.deny();`) instead of
-   * silently doing nothing, while making the limitation impossible to miss.
-   */
-  deny(): never;
+  /** Removes the requester from pendingJoinRequests without adding them. */
+  deny(): Promise<unknown>;
 }
 
 export interface ChatRequestHandle extends PendingChatRequest {
@@ -188,12 +181,7 @@ export class EvergramBot {
       const req: JoinRequestHandle = {
         ...event,
         approve: () => this.core.addParticipant(event.chatId, event.identity),
-        deny: () => {
-          throw new EvergramError(
-            "deny_not_supported",
-            "The Evergram protocol has no reject RPC for join requests today — only approve() (addParticipant) clears a pending request."
-          );
-        },
+        deny: () => this.core.denyJoinRequest(event.chatId, event.identity),
       };
 
       Promise.resolve(handler(req)).catch((err) => this.core.emit("error", err));
