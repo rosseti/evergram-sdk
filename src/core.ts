@@ -64,6 +64,16 @@ const MAX_PENDING_ENVELOPES_PER_CHAT = 500;
 // case, not the happy path.
 const MAX_PENDING_SENDS = 1000;
 
+// Bounds seenEnvelopeKeys (see decryptAndEmit's dedup check below), which
+// exists because the gateway is untrusted transport and is expected to
+// redeliver/replay envelopes (reconnects, mailbox resync, etc.) — see
+// context/boundaries.md's "Client: Replay protection" responsibility and
+// webapp's message-key.ts, which this mirrors for the SDK's own decrypt
+// path. Uncapped, this would be an unbounded per-process Set for the life
+// of a long-running bot; oldest keys are evicted first once the cap is hit,
+// same FIFO-ish tradeoff as MAX_PENDING_ENVELOPES_PER_CHAT above.
+const MAX_SEEN_ENVELOPE_KEYS = 5000;
+
 // Mirrors the OS family naming the webapp's platform-label.ts already uses
 // for the "{Browser} · {OS}" convention (Preferences > Devices), so the
 // device owner sees a consistent OS name regardless of which client
@@ -279,6 +289,10 @@ export class EvergramCore extends EventEmitter {
   private readonly chats = new Map<string, ChatInfo>();
   private readonly symKeys = new Map<string, Uint8Array>();
   private readonly pendingEnvelopes = new Map<string, Envelope[]>();
+  // Insertion-ordered dedup set for decryptAndEmit — see
+  // MAX_SEEN_ENVELOPE_KEYS above. A Map (not Set) so eviction can reuse
+  // Map's insertion-order iteration to drop the oldest key in O(1).
+  private readonly seenEnvelopeKeys = new Map<string, true>();
   // Tracks in-flight sendMessage() calls by their own msgId so a later
   // ROTATION_REQUIRED delivery failure can rotate the chat key and resend
   // the original plaintext — see handleEnvelope's DELIVERY branch and
@@ -1563,7 +1577,45 @@ export class EvergramCore extends EventEmitter {
     for (const env of pending) this.decryptAndEmit(env, symKey);
   }
 
+  // Replay/duplicate suppression for the decrypt path — the gateway is
+  // untrusted transport and redelivers envelopes on reconnect/resync (see
+  // context/boundaries.md). nacl.secretbox itself has no nonce-reuse
+  // tracking, so a replayed envelope decrypts successfully again unless
+  // caught here. Keyed by envelope type + msgId + that type's own nonce
+  // (falling back to ts when nonce is empty, e.g. removed reacts/edits) so
+  // a *legitimate* EDIT to an already-seen msgId is never mistaken for a
+  // duplicate SEND — each carries its own nonce and its own "SEND:"/"EDIT:"
+  // prefix, only an exact envelope redelivery collides. Mirrors
+  // webapp/app/lib/message-key.ts's getMessageKey/dedupeMessages.
+  private envelopeDedupeKey(env: Envelope): string | null {
+    if (env.type === "SEND" && env.send) {
+      return `SEND:${env.send.msgId}:${env.send.nonce}`;
+    }
+    if (env.type === "REACT" && env.react) {
+      return `REACT:${env.react.msgId}:${env.react.nonce || env.ts}:${env.react.removed ? "1" : "0"}`;
+    }
+    if (env.type === "EDIT" && env.edit) {
+      return `EDIT:${env.edit.msgId}:${env.edit.nonce || env.edit.editedAt || env.ts}:${env.edit.removed ? "1" : "0"}`;
+    }
+    return null;
+  }
+
+  private isDuplicateEnvelope(env: Envelope): boolean {
+    const key = this.envelopeDedupeKey(env);
+    if (key === null) return false;
+    if (this.seenEnvelopeKeys.has(key)) return true;
+
+    this.seenEnvelopeKeys.set(key, true);
+    if (this.seenEnvelopeKeys.size > MAX_SEEN_ENVELOPE_KEYS) {
+      const oldest = this.seenEnvelopeKeys.keys().next().value;
+      if (oldest !== undefined) this.seenEnvelopeKeys.delete(oldest);
+    }
+    return false;
+  }
+
   private decryptAndEmit(env: Envelope, symKey: Uint8Array): void {
+    if (this.isDuplicateEnvelope(env)) return;
+
     if (env.send) {
       const text = decryptMessage(symKey, env.send.nonce, env.send.ciphertext);
 
