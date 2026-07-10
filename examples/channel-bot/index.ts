@@ -9,6 +9,7 @@ const WEBAPP_URL = process.env.EVERGRAM_WEBAPP_URL || "http://localhost:3000";
 // falls back to "the first non-deleted widget this identity owns" (same
 // convention as visitor-bot) when unset.
 const WIDGET_ID = process.env.EVERGRAM_WIDGET_ID || "";
+const NICKNAME = process.env.EVERGRAM_NICKNAME || "Widget Group Bot";
 
 // Joins this bot into a widget's public_group channel as an operator (auto-
 // opped, same as the webapp owner's live-arrival session) — echoes channel
@@ -19,7 +20,7 @@ const WIDGET_ID = process.env.EVERGRAM_WIDGET_ID || "";
 async function main() {
   const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
 
-  const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "ChannelBot" });
+  const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: NICKNAME });
 
   bot.core.on("error", (err) => console.error("[channel-bot] error:", err));
   bot.core.on("disconnected", () => console.warn("[channel-bot] disconnected from gateway"));
@@ -113,7 +114,7 @@ async function main() {
     throw new Error(`subscribePublicChannel failed: ${status?.code} ${status?.message}`);
   }
 
-  bot.core.announceChannelPresence(roomToken, "ChannelBot");
+  bot.core.announceChannelPresence(roomToken, NICKNAME);
   console.log(`[channel-bot] joined channel for widget "${widget.name}" (room ${roomToken})`);
   console.log(`[channel-bot] current participants: ${participants.length ? participants.join(", ") : "(none yet)"}`);
   console.log(`[channel-bot] open this as a visitor: ${WEBAPP_URL}/widget/${widget.widgetId}`);
