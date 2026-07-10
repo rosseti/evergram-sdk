@@ -14,6 +14,10 @@ export type {
   EvergramVisitorRoomRequested,
   EvergramVisitorStatusChanged,
   EvergramVisitorRoomTimedOut,
+  EvergramVisitorChannelParticipantJoined,
+  EvergramVisitorChannelParticipantLeft,
+  EvergramVisitorChannelModeChanged,
+  EvergramVisitorKicked,
 } from "./core";
 
 // Widget-visitor chat — see [[evergram-sdk-relay-duplication]] memory.
@@ -25,6 +29,7 @@ export type {
   EphemeralReactEvent,
   EphemeralEditEvent,
   EphemeralRemoveEvent,
+  EphemeralModerationState,
 } from "./ephemeral-relay-session";
 
 export { parseMessageContent, formatMessagePreview } from "./message-content";
