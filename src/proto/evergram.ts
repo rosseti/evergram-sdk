@@ -54,6 +54,87 @@ export function chainFamilyToJSON(object: ChainFamily): string {
   }
 }
 
+/**
+ * IRC-style moderation for a public_group channel (see
+ * publicChannelRegistry.ts). Every action shares the same auth check (caller
+ * must currently be op — see isChannelOp) and the same request/target shape,
+ * so this is one combined RPC rather than a message per action.
+ */
+export enum ModerationAction {
+  MODERATION_KICK = 0,
+  MODERATION_BAN = 1,
+  MODERATION_UNBAN = 2,
+  MODERATION_GRANT_OP = 3,
+  MODERATION_REVOKE_OP = 4,
+  MODERATION_GRANT_VOICE = 5,
+  MODERATION_REVOKE_VOICE = 6,
+  MODERATION_SET_MODERATED = 7,
+  MODERATION_UNSET_MODERATED = 8,
+  UNRECOGNIZED = -1,
+}
+
+export function moderationActionFromJSON(object: any): ModerationAction {
+  switch (object) {
+    case 0:
+    case "MODERATION_KICK":
+      return ModerationAction.MODERATION_KICK;
+    case 1:
+    case "MODERATION_BAN":
+      return ModerationAction.MODERATION_BAN;
+    case 2:
+    case "MODERATION_UNBAN":
+      return ModerationAction.MODERATION_UNBAN;
+    case 3:
+    case "MODERATION_GRANT_OP":
+      return ModerationAction.MODERATION_GRANT_OP;
+    case 4:
+    case "MODERATION_REVOKE_OP":
+      return ModerationAction.MODERATION_REVOKE_OP;
+    case 5:
+    case "MODERATION_GRANT_VOICE":
+      return ModerationAction.MODERATION_GRANT_VOICE;
+    case 6:
+    case "MODERATION_REVOKE_VOICE":
+      return ModerationAction.MODERATION_REVOKE_VOICE;
+    case 7:
+    case "MODERATION_SET_MODERATED":
+      return ModerationAction.MODERATION_SET_MODERATED;
+    case 8:
+    case "MODERATION_UNSET_MODERATED":
+      return ModerationAction.MODERATION_UNSET_MODERATED;
+    case -1:
+    case "UNRECOGNIZED":
+    default:
+      return ModerationAction.UNRECOGNIZED;
+  }
+}
+
+export function moderationActionToJSON(object: ModerationAction): string {
+  switch (object) {
+    case ModerationAction.MODERATION_KICK:
+      return "MODERATION_KICK";
+    case ModerationAction.MODERATION_BAN:
+      return "MODERATION_BAN";
+    case ModerationAction.MODERATION_UNBAN:
+      return "MODERATION_UNBAN";
+    case ModerationAction.MODERATION_GRANT_OP:
+      return "MODERATION_GRANT_OP";
+    case ModerationAction.MODERATION_REVOKE_OP:
+      return "MODERATION_REVOKE_OP";
+    case ModerationAction.MODERATION_GRANT_VOICE:
+      return "MODERATION_GRANT_VOICE";
+    case ModerationAction.MODERATION_REVOKE_VOICE:
+      return "MODERATION_REVOKE_VOICE";
+    case ModerationAction.MODERATION_SET_MODERATED:
+      return "MODERATION_SET_MODERATED";
+    case ModerationAction.MODERATION_UNSET_MODERATED:
+      return "MODERATION_UNSET_MODERATED";
+    case ModerationAction.UNRECOGNIZED:
+    default:
+      return "UNRECOGNIZED";
+  }
+}
+
 export enum RelayMessageKind {
   /**
    * RELAY_JOINED - Sent by the anonymous joiner as its first frame for a room_token —
@@ -113,13 +194,51 @@ export enum RelayMessageKind {
   /**
    * RELAY_TYPING - Sent by either side currently holding a slot in the room, mirroring
    * TypingContent on the real per-chat Envelope (see handleTyping.ts on the
-   * gateway) — plaintext payload, JSON {isTyping: bool}, not nacl-encrypted
-   * like the content kinds above: typing liveness isn't message content,
-   * and the real chat already accepts the gateway seeing it in the clear.
-   * Relayed through the exact same opaque kind+payload path as every other
-   * frame (see relayMessage.ts) — no gateway changes needed to support it.
+   * gateway) — plaintext payload, JSON {isTyping: bool, sender?: string},
+   * not nacl-encrypted like the content kinds above: typing liveness isn't
+   * message content, and the real chat already accepts the gateway seeing
+   * it in the clear. `sender` is public_group-only (a channel has more than
+   * one other party to attribute the signal to); 1:1 rooms omit it. Relayed
+   * through the exact same opaque kind+payload path as every other frame
+   * (see relayMessage.ts) — no gateway changes needed to support it.
    */
   RELAY_TYPING = 9,
+  /**
+   * RELAY_CHANNEL_JOIN - public_group-only presence, deliberately distinct from RELAY_JOINED/
+   * RELAY_LEFT: those two pair/unpair a 1:1 room's single peer and flip
+   * EphemeralRelaySession's connectionStatus (open/peer_left) — reusing
+   * them for a shared channel would wrongly flip the whole channel to
+   * "peer_left" every time any one of N participants disconnects. Sent by
+   * a visitor's client right after joining a channel; payload is plaintext
+   * JSON {sender}, like RELAY_TYPING — presence, not message content — so
+   * the gateway may read (but never modify) it to learn the connection's
+   * nickname for publicChannelRegistry.ts's participant tracking.
+   */
+  RELAY_CHANNEL_JOIN = 10,
+  /**
+   * RELAY_CHANNEL_PART - Gateway-synthesized (never sent by a client), mirroring RELAY_LEFT's
+   * "gateway announces a drop" pattern but scoped to one participant of a
+   * shared channel rather than a 1:1 room's only peer. Plaintext payload
+   * {sender}, same shape as RELAY_CHANNEL_JOIN.
+   */
+  RELAY_CHANNEL_PART = 11,
+  /**
+   * RELAY_CHANNEL_KICKED - Gateway-synthesized (never sent by a client), targeted at exactly the
+   * ejected connection only (not broadcast) — sent right before the
+   * gateway closes that socket in response to a ModerateChannel KICK or
+   * BAN action (see moderateChannel.ts). Plaintext payload {reason:
+   * "kicked"|"banned"}; the client treats this like RELAY_END/
+   * RELAY_CLAIMED_ELSEWHERE — final, no reconnect.
+   */
+  RELAY_CHANNEL_KICKED = 12,
+  /**
+   * RELAY_CHANNEL_MODE - Gateway-synthesized (never sent by a client), broadcast to every
+   * remaining channel subscriber after any ModerateChannel action
+   * succeeds — plaintext payload is a fresh state snapshot, {moderated:
+   * bool, ops: string[], voiced: string[]} (participant names, same
+   * identity model as RELAY_CHANNEL_JOIN — presence, not content).
+   */
+  RELAY_CHANNEL_MODE = 13,
   UNRECOGNIZED = -1,
 }
 
@@ -155,6 +274,18 @@ export function relayMessageKindFromJSON(object: any): RelayMessageKind {
     case 9:
     case "RELAY_TYPING":
       return RelayMessageKind.RELAY_TYPING;
+    case 10:
+    case "RELAY_CHANNEL_JOIN":
+      return RelayMessageKind.RELAY_CHANNEL_JOIN;
+    case 11:
+    case "RELAY_CHANNEL_PART":
+      return RelayMessageKind.RELAY_CHANNEL_PART;
+    case 12:
+    case "RELAY_CHANNEL_KICKED":
+      return RelayMessageKind.RELAY_CHANNEL_KICKED;
+    case 13:
+    case "RELAY_CHANNEL_MODE":
+      return RelayMessageKind.RELAY_CHANNEL_MODE;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -184,6 +315,14 @@ export function relayMessageKindToJSON(object: RelayMessageKind): string {
       return "RELAY_CLAIMED_ELSEWHERE";
     case RelayMessageKind.RELAY_TYPING:
       return "RELAY_TYPING";
+    case RelayMessageKind.RELAY_CHANNEL_JOIN:
+      return "RELAY_CHANNEL_JOIN";
+    case RelayMessageKind.RELAY_CHANNEL_PART:
+      return "RELAY_CHANNEL_PART";
+    case RelayMessageKind.RELAY_CHANNEL_KICKED:
+      return "RELAY_CHANNEL_KICKED";
+    case RelayMessageKind.RELAY_CHANNEL_MODE:
+      return "RELAY_CHANNEL_MODE";
     case RelayMessageKind.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -293,6 +432,63 @@ export interface ClientMessage {
   revokeDevice?: RevokeDevice | undefined;
   listDevices?: ListDevices | undefined;
   denyJoinRequest?: DenyJoinRequest | undefined;
+  syncHistoryRequest?: SyncHistoryRequest | undefined;
+  syncHistoryFetch?: SyncHistoryFetch | undefined;
+  syncHistoryAccept?: SyncHistoryAccept | undefined;
+  syncHistoryReject?: SyncHistoryReject | undefined;
+  syncHistoryChunk?: SyncHistoryChunk | undefined;
+  syncHistoryDone?: SyncHistoryDone | undefined;
+  updateWidgetConfig?: UpdateWidgetConfig | undefined;
+  subscribePublicChannel?: SubscribePublicChannel | undefined;
+  moderateChannel?: ModerateChannel | undefined;
+}
+
+export interface SubscribePublicChannel {
+  widgetId: string;
+  /** 64-char hex, from operator's local widgetConfig */
+  channelKey: string;
+}
+
+export interface SubscribePublicChannelResponse {
+  status: ResponseStatus | undefined;
+  roomToken: string;
+  channelKey: string;
+  /**
+   * Nicknames already known for this channel's other live subscribers (see
+   * publicChannelRegistry.ts's getChannelParticipantNames) — lets the
+   * caller seed its participants list without waiting for each of them to
+   * send anything. Never includes the caller itself.
+   */
+  participants: string[];
+  /**
+   * Current moderation state (see publicChannelRegistry.ts's
+   * ModerationSnapshot) — without this, a (re)joining/reconnecting client
+   * has no way to know who's op/voiced or whether the channel is
+   * moderated until the next live ModerateChannel action broadcasts one;
+   * after a reload it would otherwise silently reset to nothing/false.
+   */
+  moderated: boolean;
+  ops: string[];
+  voiced: string[];
+}
+
+export interface ModerateChannel {
+  roomToken: string;
+  action: ModerationAction;
+  /**
+   * Required for KICK/BAN/UNBAN/GRANT_OP/REVOKE_OP/GRANT_VOICE/REVOKE_VOICE
+   * (resolved to a live subscriber by current nickname — see
+   * findSubscriberWsByName); ignored for SET_MODERATED/UNSET_MODERATED.
+   */
+  targetParticipant: string;
+}
+
+export interface ModerateChannelResponse {
+  status: ResponseStatus | undefined;
+  roomToken: string;
+  moderated: boolean;
+  ops: string[];
+  voiced: string[];
 }
 
 /**
@@ -345,6 +541,8 @@ export interface Widget {
   deleted: boolean;
   widgetVersion: number;
   createdAt: number;
+  /** present when the owner's own ListWidgets response includes stored config (e.g. for public_group key recovery) */
+  config: WidgetConfig | undefined;
 }
 
 export interface CreateWidget {
@@ -401,6 +599,7 @@ export interface GetWidgetInfoResponse {
   enabled: boolean;
   ownerIdentityKey: string;
   devices: Device[];
+  config: WidgetConfig | undefined;
 }
 
 /**
@@ -422,9 +621,47 @@ export interface CreateVisitorRoom {
   firstMessagePayload: Uint8Array;
 }
 
+export interface WidgetConfig {
+  primaryColor: string;
+  logoUrl: string;
+  welcomeMessage: string;
+  inputPlaceholder: string;
+  agentName: string;
+  /** "bottom-right" | "bottom-left" */
+  position: string;
+  /** "private_chat" | "public_group" */
+  mode: string;
+  /** 64-char hex (32 bytes); only present in public_group */
+  channelKey: string;
+}
+
+export interface UpdateWidgetConfig {
+  widgetId: string;
+  config: WidgetConfig | undefined;
+}
+
+export interface UpdateWidgetConfigResponse {
+  status: ResponseStatus | undefined;
+}
+
 export interface CreateVisitorRoomResponse {
   status: ResponseStatus | undefined;
   roomToken: string;
+  config:
+    | WidgetConfig
+    | undefined;
+  /**
+   * public_group only — see SubscribePublicChannelResponse.participants.
+   * Always empty for private_chat.
+   */
+  participants: string[];
+  /**
+   * public_group only — see SubscribePublicChannelResponse.moderated/
+   * ops/voiced. Always false/empty for private_chat.
+   */
+  moderated: boolean;
+  ops: string[];
+  voiced: string[];
 }
 
 /**
@@ -583,6 +820,19 @@ export interface RequestJoinResponse {
   moderators: string[];
 }
 
+export interface DenyJoinRequest {
+  chatId: string;
+  remoteIdentity: string;
+}
+
+export interface DenyJoinResponse {
+  status: ResponseStatus | undefined;
+  chatId: string;
+  remoteIdentity: string;
+  /** group name, for the requester notification */
+  name: string;
+}
+
 /**
  * Server -> client push, sent to a group's admins/moderators when someone
  * requests to join via invite link.
@@ -595,20 +845,13 @@ export interface JoinRequestedEvent {
   ts: number;
 }
 
-export interface DenyJoinRequest {
-  chatId: string;
-  remoteIdentity: string;
-}
-
-export interface DenyJoinResponse {
-  status: ResponseStatus | undefined;
-  chatId: string;
-  remoteIdentity: string;
-  name: string;
-}
-
+/**
+ * Server -> client push, sent to the requester when an admin/moderator denies
+ * their join request.
+ */
 export interface JoinDeniedEvent {
   chatId: string;
+  /** group name, for notification copy */
   name: string;
 }
 
@@ -709,6 +952,15 @@ export interface ServerMessage {
   listDevicesResponse?: ListDevicesResponse | undefined;
   denyJoinResponse?: DenyJoinResponse | undefined;
   joinDeniedEvent?: JoinDeniedEvent | undefined;
+  syncHistoryRequest?: SyncHistoryRequest | undefined;
+  syncHistoryFetch?: SyncHistoryFetch | undefined;
+  syncHistoryAccept?: SyncHistoryAccept | undefined;
+  syncHistoryReject?: SyncHistoryReject | undefined;
+  syncHistoryChunk?: SyncHistoryChunk | undefined;
+  syncHistoryDone?: SyncHistoryDone | undefined;
+  updateWidgetConfigResponse?: UpdateWidgetConfigResponse | undefined;
+  subscribePublicChannelResponse?: SubscribePublicChannelResponse | undefined;
+  moderateChannelResponse?: ModerateChannelResponse | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -1547,6 +1799,170 @@ export interface MetricsResponse {
   metrics: MetricsData | undefined;
 }
 
+/**
+ * Requester → Gateway → Peer: initiate negotiation.
+ * chat_ids lists the chats the requester wants to sync; the peer responds with
+ * ranges only for chats it actually has history for.
+ */
+export interface SyncHistoryRequest {
+  requesterDeviceId: string;
+  protocolVersion: string;
+  chatIds: string[];
+  /**
+   * nacl.box public key (base64) generated by the requester for this sync
+   * session. The responder seals each DBMessage.text with this key so the
+   * gateway never sees plaintext. Included in every Fetch so the responder
+   * has it stateless without storing session state from the Request.
+   */
+  requesterPubkey: string;
+  /**
+   * Challenge-response authentication: the requester sends 32 random bytes
+   * (base64) and its nacl.box device pubkey (hex). The responder must seal
+   * the challenge with nacl.box(challenge, nonce, requesterDevicePub,
+   * responderDevicePriv) and return the result in SyncHistoryAccept.
+   * This proves the responder knows the private key for responder_device_pub.
+   */
+  challenge: string;
+  requesterDevicePub: string;
+}
+
+/**
+ * Per-chat range descriptor: advertises what the responder owns.
+ * count is informational (lets the requester estimate total work).
+ */
+export interface SyncChatRange {
+  chatId: string;
+  minTs: number;
+  maxTs: number;
+  count: number;
+}
+
+/**
+ * Peer → Gateway → Requester: accept + range advertisement.
+ * responder_device_id lets the requester address subsequent SyncHistoryFetch
+ * messages to this specific peer (stateless gateway routing).
+ * symKey sealed by the responder for the requester's registered device pubkey.
+ * nacl.box(symKey, nonce, requesterDevicePub, ephemeralPrivkey).
+ * Allows a first-access device to decrypt chat history without key rotation.
+ */
+export interface SyncSymKeyForChat {
+  chatId: string;
+  ciphertext: string;
+  nonce: string;
+  ephemeralPubkey: string;
+}
+
+export interface SyncHistoryAccept {
+  requesterDeviceId: string;
+  responderDeviceId: string;
+  protocolVersion: string;
+  ranges: SyncChatRange[];
+  /**
+   * Challenge response: nacl.box(challenge, nonce, requesterDevicePub,
+   * responderDevicePriv). Proves the responder knows the private key for
+   * responder_device_pub. Empty if the requester sent no challenge.
+   */
+  challengeResponse: string;
+  challengeNonce: string;
+  responderDevicePub: string;
+  /**
+   * Per-chat symKeys sealed for the requester's registered device pubkey.
+   * Only populated when the responder has a decrypted symKey for the chat.
+   */
+  sealedSymKeys: SyncSymKeyForChat[];
+}
+
+/**
+ * Peer → Gateway → Requester: reject (peer has no history, is busy, or
+ * speaks an incompatible protocol version).
+ */
+export interface SyncHistoryReject {
+  requesterDeviceId: string;
+  reason: string;
+}
+
+/**
+ * Requester → Gateway → Peer: request a specific message range for one chat.
+ * from_ts is an exclusive lower bound (0 = from the beginning).
+ * to_ts is an inclusive upper bound (0 = no upper bound).
+ * limit caps the total messages returned; 0 = responder uses its own default.
+ * The SyncManager sets these based on local cursor state — not the protocol.
+ */
+export interface SyncHistoryFetch {
+  requesterDeviceId: string;
+  targetDeviceId: string;
+  chatId: string;
+  fromTs: number;
+  toTs: number;
+  limit: number;
+  /**
+   * Same requester_pubkey from SyncHistoryRequest, repeated here so the
+   * responder can seal text fields without tracking per-session state.
+   */
+  requesterPubkey: string;
+}
+
+/**
+ * Protocol-level history entry. Storage-agnostic: no Dexie, IndexedDB, or
+ * schema details leak into this message. The receiver maps it to its own
+ * persistence format.
+ */
+export interface SyncHistoryEntry {
+  msgId: string;
+  chatId: string;
+  sender: string;
+  ts: number;
+  ciphertext: string;
+  nonce: string;
+  replyToMsgId: string;
+  edited: boolean;
+  editedAt: number;
+  removed: boolean;
+  removedAt: number;
+  /**
+   * DBMessage.text sealed with nacl.box(text, nonce, requesterPubkey, responderEphemeralPrivkey).
+   * sealed_text_nonce is the nacl.box nonce (distinct from the message nonce above).
+   * The responder ephemeral pubkey is carried per-chunk in SyncHistoryChunk.
+   */
+  sealedText: string;
+  sealedTextNonce: string;
+  /** JSON-encoded DBMessage.reactions: Record<identityKey, { emoji: string; ts: number }> */
+  reactionsJson: string;
+}
+
+/**
+ * Peer → Gateway → Requester: one batch of entries for an in-progress fetch.
+ * has_more signals whether more chunks follow before SyncHistoryDone.
+ * last_ts carries the ts of the final entry in this chunk — used by the
+ * SyncManager to update its per-chat cursor for recovery after reconnect.
+ */
+export interface SyncHistoryChunk {
+  requesterDeviceId: string;
+  chatId: string;
+  entries: SyncHistoryEntry[];
+  hasMore: boolean;
+  lastTs: number;
+  /**
+   * Ephemeral nacl.box pubkey (base64) generated by the responder for this
+   * fetch. All SyncHistoryEntry.sealed_text values in this chunk were sealed
+   * with the corresponding secret key. One keypair per handleSyncFetch call.
+   */
+  responderEphemeralPubkey: string;
+}
+
+/**
+ * Peer → Gateway → Requester: signals the end of the entry stream for one
+ * SyncHistoryFetch. total_sent is the count of entries sent across all chunks.
+ * has_more is true when the responder hit the fetch limit and there are more
+ * messages beyond last_ts — the requester should re-fetch from the cursor.
+ */
+export interface SyncHistoryDone {
+  requesterDeviceId: string;
+  chatId: string;
+  totalSent: number;
+  hasMore: boolean;
+}
+
 function createBaseChainIdentity(): ChainIdentity {
   return { chainFamily: 0, address: "", networkId: undefined };
 }
@@ -2046,6 +2462,15 @@ function createBaseClientMessage(): ClientMessage {
     revokeDevice: undefined,
     listDevices: undefined,
     denyJoinRequest: undefined,
+    syncHistoryRequest: undefined,
+    syncHistoryFetch: undefined,
+    syncHistoryAccept: undefined,
+    syncHistoryReject: undefined,
+    syncHistoryChunk: undefined,
+    syncHistoryDone: undefined,
+    updateWidgetConfig: undefined,
+    subscribePublicChannel: undefined,
+    moderateChannel: undefined,
   };
 }
 
@@ -2200,6 +2625,33 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.denyJoinRequest !== undefined) {
       DenyJoinRequest.encode(message.denyJoinRequest, writer.uint32(410).fork()).join();
+    }
+    if (message.syncHistoryRequest !== undefined) {
+      SyncHistoryRequest.encode(message.syncHistoryRequest, writer.uint32(418).fork()).join();
+    }
+    if (message.syncHistoryFetch !== undefined) {
+      SyncHistoryFetch.encode(message.syncHistoryFetch, writer.uint32(426).fork()).join();
+    }
+    if (message.syncHistoryAccept !== undefined) {
+      SyncHistoryAccept.encode(message.syncHistoryAccept, writer.uint32(434).fork()).join();
+    }
+    if (message.syncHistoryReject !== undefined) {
+      SyncHistoryReject.encode(message.syncHistoryReject, writer.uint32(442).fork()).join();
+    }
+    if (message.syncHistoryChunk !== undefined) {
+      SyncHistoryChunk.encode(message.syncHistoryChunk, writer.uint32(450).fork()).join();
+    }
+    if (message.syncHistoryDone !== undefined) {
+      SyncHistoryDone.encode(message.syncHistoryDone, writer.uint32(458).fork()).join();
+    }
+    if (message.updateWidgetConfig !== undefined) {
+      UpdateWidgetConfig.encode(message.updateWidgetConfig, writer.uint32(466).fork()).join();
+    }
+    if (message.subscribePublicChannel !== undefined) {
+      SubscribePublicChannel.encode(message.subscribePublicChannel, writer.uint32(474).fork()).join();
+    }
+    if (message.moderateChannel !== undefined) {
+      ModerateChannel.encode(message.moderateChannel, writer.uint32(482).fork()).join();
     }
     return writer;
   },
@@ -2611,6 +3063,78 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.denyJoinRequest = DenyJoinRequest.decode(reader, reader.uint32());
           continue;
         }
+        case 52: {
+          if (tag !== 418) {
+            break;
+          }
+
+          message.syncHistoryRequest = SyncHistoryRequest.decode(reader, reader.uint32());
+          continue;
+        }
+        case 53: {
+          if (tag !== 426) {
+            break;
+          }
+
+          message.syncHistoryFetch = SyncHistoryFetch.decode(reader, reader.uint32());
+          continue;
+        }
+        case 54: {
+          if (tag !== 434) {
+            break;
+          }
+
+          message.syncHistoryAccept = SyncHistoryAccept.decode(reader, reader.uint32());
+          continue;
+        }
+        case 55: {
+          if (tag !== 442) {
+            break;
+          }
+
+          message.syncHistoryReject = SyncHistoryReject.decode(reader, reader.uint32());
+          continue;
+        }
+        case 56: {
+          if (tag !== 450) {
+            break;
+          }
+
+          message.syncHistoryChunk = SyncHistoryChunk.decode(reader, reader.uint32());
+          continue;
+        }
+        case 57: {
+          if (tag !== 458) {
+            break;
+          }
+
+          message.syncHistoryDone = SyncHistoryDone.decode(reader, reader.uint32());
+          continue;
+        }
+        case 58: {
+          if (tag !== 466) {
+            break;
+          }
+
+          message.updateWidgetConfig = UpdateWidgetConfig.decode(reader, reader.uint32());
+          continue;
+        }
+        case 59: {
+          if (tag !== 474) {
+            break;
+          }
+
+          message.subscribePublicChannel = SubscribePublicChannel.decode(reader, reader.uint32());
+          continue;
+        }
+        case 60: {
+          if (tag !== 482) {
+            break;
+          }
+
+          message.moderateChannel = ModerateChannel.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -2860,6 +3384,51 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.deny_join_request)
         ? DenyJoinRequest.fromJSON(object.deny_join_request)
         : undefined,
+      syncHistoryRequest: isSet(object.syncHistoryRequest)
+        ? SyncHistoryRequest.fromJSON(object.syncHistoryRequest)
+        : isSet(object.sync_history_request)
+        ? SyncHistoryRequest.fromJSON(object.sync_history_request)
+        : undefined,
+      syncHistoryFetch: isSet(object.syncHistoryFetch)
+        ? SyncHistoryFetch.fromJSON(object.syncHistoryFetch)
+        : isSet(object.sync_history_fetch)
+        ? SyncHistoryFetch.fromJSON(object.sync_history_fetch)
+        : undefined,
+      syncHistoryAccept: isSet(object.syncHistoryAccept)
+        ? SyncHistoryAccept.fromJSON(object.syncHistoryAccept)
+        : isSet(object.sync_history_accept)
+        ? SyncHistoryAccept.fromJSON(object.sync_history_accept)
+        : undefined,
+      syncHistoryReject: isSet(object.syncHistoryReject)
+        ? SyncHistoryReject.fromJSON(object.syncHistoryReject)
+        : isSet(object.sync_history_reject)
+        ? SyncHistoryReject.fromJSON(object.sync_history_reject)
+        : undefined,
+      syncHistoryChunk: isSet(object.syncHistoryChunk)
+        ? SyncHistoryChunk.fromJSON(object.syncHistoryChunk)
+        : isSet(object.sync_history_chunk)
+        ? SyncHistoryChunk.fromJSON(object.sync_history_chunk)
+        : undefined,
+      syncHistoryDone: isSet(object.syncHistoryDone)
+        ? SyncHistoryDone.fromJSON(object.syncHistoryDone)
+        : isSet(object.sync_history_done)
+        ? SyncHistoryDone.fromJSON(object.sync_history_done)
+        : undefined,
+      updateWidgetConfig: isSet(object.updateWidgetConfig)
+        ? UpdateWidgetConfig.fromJSON(object.updateWidgetConfig)
+        : isSet(object.update_widget_config)
+        ? UpdateWidgetConfig.fromJSON(object.update_widget_config)
+        : undefined,
+      subscribePublicChannel: isSet(object.subscribePublicChannel)
+        ? SubscribePublicChannel.fromJSON(object.subscribePublicChannel)
+        : isSet(object.subscribe_public_channel)
+        ? SubscribePublicChannel.fromJSON(object.subscribe_public_channel)
+        : undefined,
+      moderateChannel: isSet(object.moderateChannel)
+        ? ModerateChannel.fromJSON(object.moderateChannel)
+        : isSet(object.moderate_channel)
+        ? ModerateChannel.fromJSON(object.moderate_channel)
+        : undefined,
     };
   },
 
@@ -3014,6 +3583,33 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.denyJoinRequest !== undefined) {
       obj.denyJoinRequest = DenyJoinRequest.toJSON(message.denyJoinRequest);
+    }
+    if (message.syncHistoryRequest !== undefined) {
+      obj.syncHistoryRequest = SyncHistoryRequest.toJSON(message.syncHistoryRequest);
+    }
+    if (message.syncHistoryFetch !== undefined) {
+      obj.syncHistoryFetch = SyncHistoryFetch.toJSON(message.syncHistoryFetch);
+    }
+    if (message.syncHistoryAccept !== undefined) {
+      obj.syncHistoryAccept = SyncHistoryAccept.toJSON(message.syncHistoryAccept);
+    }
+    if (message.syncHistoryReject !== undefined) {
+      obj.syncHistoryReject = SyncHistoryReject.toJSON(message.syncHistoryReject);
+    }
+    if (message.syncHistoryChunk !== undefined) {
+      obj.syncHistoryChunk = SyncHistoryChunk.toJSON(message.syncHistoryChunk);
+    }
+    if (message.syncHistoryDone !== undefined) {
+      obj.syncHistoryDone = SyncHistoryDone.toJSON(message.syncHistoryDone);
+    }
+    if (message.updateWidgetConfig !== undefined) {
+      obj.updateWidgetConfig = UpdateWidgetConfig.toJSON(message.updateWidgetConfig);
+    }
+    if (message.subscribePublicChannel !== undefined) {
+      obj.subscribePublicChannel = SubscribePublicChannel.toJSON(message.subscribePublicChannel);
+    }
+    if (message.moderateChannel !== undefined) {
+      obj.moderateChannel = ModerateChannel.toJSON(message.moderateChannel);
     }
     return obj;
   },
@@ -3170,6 +3766,518 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     message.denyJoinRequest = (object.denyJoinRequest !== undefined && object.denyJoinRequest !== null)
       ? DenyJoinRequest.fromPartial(object.denyJoinRequest)
       : undefined;
+    message.syncHistoryRequest = (object.syncHistoryRequest !== undefined && object.syncHistoryRequest !== null)
+      ? SyncHistoryRequest.fromPartial(object.syncHistoryRequest)
+      : undefined;
+    message.syncHistoryFetch = (object.syncHistoryFetch !== undefined && object.syncHistoryFetch !== null)
+      ? SyncHistoryFetch.fromPartial(object.syncHistoryFetch)
+      : undefined;
+    message.syncHistoryAccept = (object.syncHistoryAccept !== undefined && object.syncHistoryAccept !== null)
+      ? SyncHistoryAccept.fromPartial(object.syncHistoryAccept)
+      : undefined;
+    message.syncHistoryReject = (object.syncHistoryReject !== undefined && object.syncHistoryReject !== null)
+      ? SyncHistoryReject.fromPartial(object.syncHistoryReject)
+      : undefined;
+    message.syncHistoryChunk = (object.syncHistoryChunk !== undefined && object.syncHistoryChunk !== null)
+      ? SyncHistoryChunk.fromPartial(object.syncHistoryChunk)
+      : undefined;
+    message.syncHistoryDone = (object.syncHistoryDone !== undefined && object.syncHistoryDone !== null)
+      ? SyncHistoryDone.fromPartial(object.syncHistoryDone)
+      : undefined;
+    message.updateWidgetConfig = (object.updateWidgetConfig !== undefined && object.updateWidgetConfig !== null)
+      ? UpdateWidgetConfig.fromPartial(object.updateWidgetConfig)
+      : undefined;
+    message.subscribePublicChannel =
+      (object.subscribePublicChannel !== undefined && object.subscribePublicChannel !== null)
+        ? SubscribePublicChannel.fromPartial(object.subscribePublicChannel)
+        : undefined;
+    message.moderateChannel = (object.moderateChannel !== undefined && object.moderateChannel !== null)
+      ? ModerateChannel.fromPartial(object.moderateChannel)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseSubscribePublicChannel(): SubscribePublicChannel {
+  return { widgetId: "", channelKey: "" };
+}
+
+export const SubscribePublicChannel: MessageFns<SubscribePublicChannel> = {
+  encode(message: SubscribePublicChannel, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    if (message.channelKey !== "") {
+      writer.uint32(18).string(message.channelKey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribePublicChannel {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribePublicChannel();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.channelKey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribePublicChannel {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+      channelKey: isSet(object.channelKey)
+        ? globalThis.String(object.channelKey)
+        : isSet(object.channel_key)
+        ? globalThis.String(object.channel_key)
+        : "",
+    };
+  },
+
+  toJSON(message: SubscribePublicChannel): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    if (message.channelKey !== "") {
+      obj.channelKey = message.channelKey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribePublicChannel>, I>>(base?: I): SubscribePublicChannel {
+    return SubscribePublicChannel.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribePublicChannel>, I>>(object: I): SubscribePublicChannel {
+    const message = createBaseSubscribePublicChannel();
+    message.widgetId = object.widgetId ?? "";
+    message.channelKey = object.channelKey ?? "";
+    return message;
+  },
+};
+
+function createBaseSubscribePublicChannelResponse(): SubscribePublicChannelResponse {
+  return { status: undefined, roomToken: "", channelKey: "", participants: [], moderated: false, ops: [], voiced: [] };
+}
+
+export const SubscribePublicChannelResponse: MessageFns<SubscribePublicChannelResponse> = {
+  encode(message: SubscribePublicChannelResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.roomToken !== "") {
+      writer.uint32(18).string(message.roomToken);
+    }
+    if (message.channelKey !== "") {
+      writer.uint32(26).string(message.channelKey);
+    }
+    for (const v of message.participants) {
+      writer.uint32(34).string(v!);
+    }
+    if (message.moderated !== false) {
+      writer.uint32(40).bool(message.moderated);
+    }
+    for (const v of message.ops) {
+      writer.uint32(50).string(v!);
+    }
+    for (const v of message.voiced) {
+      writer.uint32(58).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SubscribePublicChannelResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSubscribePublicChannelResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.channelKey = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.participants.push(reader.string());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.moderated = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.ops.push(reader.string());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.voiced.push(reader.string());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SubscribePublicChannelResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+      channelKey: isSet(object.channelKey)
+        ? globalThis.String(object.channelKey)
+        : isSet(object.channel_key)
+        ? globalThis.String(object.channel_key)
+        : "",
+      participants: globalThis.Array.isArray(object?.participants)
+        ? object.participants.map((e: any) => globalThis.String(e))
+        : [],
+      moderated: isSet(object.moderated) ? globalThis.Boolean(object.moderated) : false,
+      ops: globalThis.Array.isArray(object?.ops) ? object.ops.map((e: any) => globalThis.String(e)) : [],
+      voiced: globalThis.Array.isArray(object?.voiced) ? object.voiced.map((e: any) => globalThis.String(e)) : [],
+    };
+  },
+
+  toJSON(message: SubscribePublicChannelResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    if (message.channelKey !== "") {
+      obj.channelKey = message.channelKey;
+    }
+    if (message.participants?.length) {
+      obj.participants = message.participants;
+    }
+    if (message.moderated !== false) {
+      obj.moderated = message.moderated;
+    }
+    if (message.ops?.length) {
+      obj.ops = message.ops;
+    }
+    if (message.voiced?.length) {
+      obj.voiced = message.voiced;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SubscribePublicChannelResponse>, I>>(base?: I): SubscribePublicChannelResponse {
+    return SubscribePublicChannelResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SubscribePublicChannelResponse>, I>>(
+    object: I,
+  ): SubscribePublicChannelResponse {
+    const message = createBaseSubscribePublicChannelResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.roomToken = object.roomToken ?? "";
+    message.channelKey = object.channelKey ?? "";
+    message.participants = object.participants?.map((e) => e) || [];
+    message.moderated = object.moderated ?? false;
+    message.ops = object.ops?.map((e) => e) || [];
+    message.voiced = object.voiced?.map((e) => e) || [];
+    return message;
+  },
+};
+
+function createBaseModerateChannel(): ModerateChannel {
+  return { roomToken: "", action: 0, targetParticipant: "" };
+}
+
+export const ModerateChannel: MessageFns<ModerateChannel> = {
+  encode(message: ModerateChannel, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.roomToken !== "") {
+      writer.uint32(10).string(message.roomToken);
+    }
+    if (message.action !== 0) {
+      writer.uint32(16).int32(message.action);
+    }
+    if (message.targetParticipant !== "") {
+      writer.uint32(26).string(message.targetParticipant);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ModerateChannel {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseModerateChannel();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.action = reader.int32() as any;
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.targetParticipant = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ModerateChannel {
+    return {
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+      action: isSet(object.action) ? moderationActionFromJSON(object.action) : 0,
+      targetParticipant: isSet(object.targetParticipant)
+        ? globalThis.String(object.targetParticipant)
+        : isSet(object.target_participant)
+        ? globalThis.String(object.target_participant)
+        : "",
+    };
+  },
+
+  toJSON(message: ModerateChannel): unknown {
+    const obj: any = {};
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    if (message.action !== 0) {
+      obj.action = moderationActionToJSON(message.action);
+    }
+    if (message.targetParticipant !== "") {
+      obj.targetParticipant = message.targetParticipant;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ModerateChannel>, I>>(base?: I): ModerateChannel {
+    return ModerateChannel.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ModerateChannel>, I>>(object: I): ModerateChannel {
+    const message = createBaseModerateChannel();
+    message.roomToken = object.roomToken ?? "";
+    message.action = object.action ?? 0;
+    message.targetParticipant = object.targetParticipant ?? "";
+    return message;
+  },
+};
+
+function createBaseModerateChannelResponse(): ModerateChannelResponse {
+  return { status: undefined, roomToken: "", moderated: false, ops: [], voiced: [] };
+}
+
+export const ModerateChannelResponse: MessageFns<ModerateChannelResponse> = {
+  encode(message: ModerateChannelResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.roomToken !== "") {
+      writer.uint32(18).string(message.roomToken);
+    }
+    if (message.moderated !== false) {
+      writer.uint32(24).bool(message.moderated);
+    }
+    for (const v of message.ops) {
+      writer.uint32(34).string(v!);
+    }
+    for (const v of message.voiced) {
+      writer.uint32(42).string(v!);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ModerateChannelResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseModerateChannelResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.moderated = reader.bool();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.ops.push(reader.string());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.voiced.push(reader.string());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ModerateChannelResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
+      moderated: isSet(object.moderated) ? globalThis.Boolean(object.moderated) : false,
+      ops: globalThis.Array.isArray(object?.ops) ? object.ops.map((e: any) => globalThis.String(e)) : [],
+      voiced: globalThis.Array.isArray(object?.voiced) ? object.voiced.map((e: any) => globalThis.String(e)) : [],
+    };
+  },
+
+  toJSON(message: ModerateChannelResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
+    if (message.moderated !== false) {
+      obj.moderated = message.moderated;
+    }
+    if (message.ops?.length) {
+      obj.ops = message.ops;
+    }
+    if (message.voiced?.length) {
+      obj.voiced = message.voiced;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ModerateChannelResponse>, I>>(base?: I): ModerateChannelResponse {
+    return ModerateChannelResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ModerateChannelResponse>, I>>(object: I): ModerateChannelResponse {
+    const message = createBaseModerateChannelResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.roomToken = object.roomToken ?? "";
+    message.moderated = object.moderated ?? false;
+    message.ops = object.ops?.map((e) => e) || [];
+    message.voiced = object.voiced?.map((e) => e) || [];
     return message;
   },
 };
@@ -3396,7 +4504,7 @@ export const RelayMessage: MessageFns<RelayMessage> = {
 };
 
 function createBaseWidget(): Widget {
-  return { widgetId: "", name: "", enabled: false, deleted: false, widgetVersion: 0, createdAt: 0 };
+  return { widgetId: "", name: "", enabled: false, deleted: false, widgetVersion: 0, createdAt: 0, config: undefined };
 }
 
 export const Widget: MessageFns<Widget> = {
@@ -3418,6 +4526,9 @@ export const Widget: MessageFns<Widget> = {
     }
     if (message.createdAt !== 0) {
       writer.uint32(48).int64(message.createdAt);
+    }
+    if (message.config !== undefined) {
+      WidgetConfig.encode(message.config, writer.uint32(58).fork()).join();
     }
     return writer;
   },
@@ -3477,6 +4588,14 @@ export const Widget: MessageFns<Widget> = {
           message.createdAt = longToNumber(reader.int64());
           continue;
         }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.config = WidgetConfig.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3506,6 +4625,7 @@ export const Widget: MessageFns<Widget> = {
         : isSet(object.created_at)
         ? globalThis.Number(object.created_at)
         : 0,
+      config: isSet(object.config) ? WidgetConfig.fromJSON(object.config) : undefined,
     };
   },
 
@@ -3529,6 +4649,9 @@ export const Widget: MessageFns<Widget> = {
     if (message.createdAt !== 0) {
       obj.createdAt = Math.round(message.createdAt);
     }
+    if (message.config !== undefined) {
+      obj.config = WidgetConfig.toJSON(message.config);
+    }
     return obj;
   },
 
@@ -3543,6 +4666,9 @@ export const Widget: MessageFns<Widget> = {
     message.deleted = object.deleted ?? false;
     message.widgetVersion = object.widgetVersion ?? 0;
     message.createdAt = object.createdAt ?? 0;
+    message.config = (object.config !== undefined && object.config !== null)
+      ? WidgetConfig.fromPartial(object.config)
+      : undefined;
     return message;
   },
 };
@@ -4177,7 +5303,7 @@ export const GetWidgetInfo: MessageFns<GetWidgetInfo> = {
 };
 
 function createBaseGetWidgetInfoResponse(): GetWidgetInfoResponse {
-  return { status: undefined, enabled: false, ownerIdentityKey: "", devices: [] };
+  return { status: undefined, enabled: false, ownerIdentityKey: "", devices: [], config: undefined };
 }
 
 export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
@@ -4193,6 +5319,9 @@ export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
     }
     for (const v of message.devices) {
       Device.encode(v!, writer.uint32(34).fork()).join();
+    }
+    if (message.config !== undefined) {
+      WidgetConfig.encode(message.config, writer.uint32(42).fork()).join();
     }
     return writer;
   },
@@ -4236,6 +5365,14 @@ export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
           message.devices.push(Device.decode(reader, reader.uint32()));
           continue;
         }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.config = WidgetConfig.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4255,6 +5392,7 @@ export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
         ? globalThis.String(object.owner_identity_key)
         : "",
       devices: globalThis.Array.isArray(object?.devices) ? object.devices.map((e: any) => Device.fromJSON(e)) : [],
+      config: isSet(object.config) ? WidgetConfig.fromJSON(object.config) : undefined,
     };
   },
 
@@ -4272,6 +5410,9 @@ export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
     if (message.devices?.length) {
       obj.devices = message.devices.map((e) => Device.toJSON(e));
     }
+    if (message.config !== undefined) {
+      obj.config = WidgetConfig.toJSON(message.config);
+    }
     return obj;
   },
 
@@ -4286,6 +5427,9 @@ export const GetWidgetInfoResponse: MessageFns<GetWidgetInfoResponse> = {
     message.enabled = object.enabled ?? false;
     message.ownerIdentityKey = object.ownerIdentityKey ?? "";
     message.devices = object.devices?.map((e) => Device.fromPartial(e)) || [];
+    message.config = (object.config !== undefined && object.config !== null)
+      ? WidgetConfig.fromPartial(object.config)
+      : undefined;
     return message;
   },
 };
@@ -4414,8 +5558,363 @@ export const CreateVisitorRoom: MessageFns<CreateVisitorRoom> = {
   },
 };
 
+function createBaseWidgetConfig(): WidgetConfig {
+  return {
+    primaryColor: "",
+    logoUrl: "",
+    welcomeMessage: "",
+    inputPlaceholder: "",
+    agentName: "",
+    position: "",
+    mode: "",
+    channelKey: "",
+  };
+}
+
+export const WidgetConfig: MessageFns<WidgetConfig> = {
+  encode(message: WidgetConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.primaryColor !== "") {
+      writer.uint32(10).string(message.primaryColor);
+    }
+    if (message.logoUrl !== "") {
+      writer.uint32(18).string(message.logoUrl);
+    }
+    if (message.welcomeMessage !== "") {
+      writer.uint32(26).string(message.welcomeMessage);
+    }
+    if (message.inputPlaceholder !== "") {
+      writer.uint32(34).string(message.inputPlaceholder);
+    }
+    if (message.agentName !== "") {
+      writer.uint32(42).string(message.agentName);
+    }
+    if (message.position !== "") {
+      writer.uint32(50).string(message.position);
+    }
+    if (message.mode !== "") {
+      writer.uint32(58).string(message.mode);
+    }
+    if (message.channelKey !== "") {
+      writer.uint32(66).string(message.channelKey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): WidgetConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseWidgetConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.primaryColor = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.logoUrl = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.welcomeMessage = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.inputPlaceholder = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.agentName = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.position = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.mode = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.channelKey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): WidgetConfig {
+    return {
+      primaryColor: isSet(object.primaryColor)
+        ? globalThis.String(object.primaryColor)
+        : isSet(object.primary_color)
+        ? globalThis.String(object.primary_color)
+        : "",
+      logoUrl: isSet(object.logoUrl)
+        ? globalThis.String(object.logoUrl)
+        : isSet(object.logo_url)
+        ? globalThis.String(object.logo_url)
+        : "",
+      welcomeMessage: isSet(object.welcomeMessage)
+        ? globalThis.String(object.welcomeMessage)
+        : isSet(object.welcome_message)
+        ? globalThis.String(object.welcome_message)
+        : "",
+      inputPlaceholder: isSet(object.inputPlaceholder)
+        ? globalThis.String(object.inputPlaceholder)
+        : isSet(object.input_placeholder)
+        ? globalThis.String(object.input_placeholder)
+        : "",
+      agentName: isSet(object.agentName)
+        ? globalThis.String(object.agentName)
+        : isSet(object.agent_name)
+        ? globalThis.String(object.agent_name)
+        : "",
+      position: isSet(object.position) ? globalThis.String(object.position) : "",
+      mode: isSet(object.mode) ? globalThis.String(object.mode) : "",
+      channelKey: isSet(object.channelKey)
+        ? globalThis.String(object.channelKey)
+        : isSet(object.channel_key)
+        ? globalThis.String(object.channel_key)
+        : "",
+    };
+  },
+
+  toJSON(message: WidgetConfig): unknown {
+    const obj: any = {};
+    if (message.primaryColor !== "") {
+      obj.primaryColor = message.primaryColor;
+    }
+    if (message.logoUrl !== "") {
+      obj.logoUrl = message.logoUrl;
+    }
+    if (message.welcomeMessage !== "") {
+      obj.welcomeMessage = message.welcomeMessage;
+    }
+    if (message.inputPlaceholder !== "") {
+      obj.inputPlaceholder = message.inputPlaceholder;
+    }
+    if (message.agentName !== "") {
+      obj.agentName = message.agentName;
+    }
+    if (message.position !== "") {
+      obj.position = message.position;
+    }
+    if (message.mode !== "") {
+      obj.mode = message.mode;
+    }
+    if (message.channelKey !== "") {
+      obj.channelKey = message.channelKey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<WidgetConfig>, I>>(base?: I): WidgetConfig {
+    return WidgetConfig.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<WidgetConfig>, I>>(object: I): WidgetConfig {
+    const message = createBaseWidgetConfig();
+    message.primaryColor = object.primaryColor ?? "";
+    message.logoUrl = object.logoUrl ?? "";
+    message.welcomeMessage = object.welcomeMessage ?? "";
+    message.inputPlaceholder = object.inputPlaceholder ?? "";
+    message.agentName = object.agentName ?? "";
+    message.position = object.position ?? "";
+    message.mode = object.mode ?? "";
+    message.channelKey = object.channelKey ?? "";
+    return message;
+  },
+};
+
+function createBaseUpdateWidgetConfig(): UpdateWidgetConfig {
+  return { widgetId: "", config: undefined };
+}
+
+export const UpdateWidgetConfig: MessageFns<UpdateWidgetConfig> = {
+  encode(message: UpdateWidgetConfig, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.widgetId !== "") {
+      writer.uint32(10).string(message.widgetId);
+    }
+    if (message.config !== undefined) {
+      WidgetConfig.encode(message.config, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdateWidgetConfig {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdateWidgetConfig();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.widgetId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.config = WidgetConfig.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdateWidgetConfig {
+    return {
+      widgetId: isSet(object.widgetId)
+        ? globalThis.String(object.widgetId)
+        : isSet(object.widget_id)
+        ? globalThis.String(object.widget_id)
+        : "",
+      config: isSet(object.config) ? WidgetConfig.fromJSON(object.config) : undefined,
+    };
+  },
+
+  toJSON(message: UpdateWidgetConfig): unknown {
+    const obj: any = {};
+    if (message.widgetId !== "") {
+      obj.widgetId = message.widgetId;
+    }
+    if (message.config !== undefined) {
+      obj.config = WidgetConfig.toJSON(message.config);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UpdateWidgetConfig>, I>>(base?: I): UpdateWidgetConfig {
+    return UpdateWidgetConfig.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UpdateWidgetConfig>, I>>(object: I): UpdateWidgetConfig {
+    const message = createBaseUpdateWidgetConfig();
+    message.widgetId = object.widgetId ?? "";
+    message.config = (object.config !== undefined && object.config !== null)
+      ? WidgetConfig.fromPartial(object.config)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseUpdateWidgetConfigResponse(): UpdateWidgetConfigResponse {
+  return { status: undefined };
+}
+
+export const UpdateWidgetConfigResponse: MessageFns<UpdateWidgetConfigResponse> = {
+  encode(message: UpdateWidgetConfigResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): UpdateWidgetConfigResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseUpdateWidgetConfigResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): UpdateWidgetConfigResponse {
+    return { status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined };
+  },
+
+  toJSON(message: UpdateWidgetConfigResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<UpdateWidgetConfigResponse>, I>>(base?: I): UpdateWidgetConfigResponse {
+    return UpdateWidgetConfigResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<UpdateWidgetConfigResponse>, I>>(object: I): UpdateWidgetConfigResponse {
+    const message = createBaseUpdateWidgetConfigResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    return message;
+  },
+};
+
 function createBaseCreateVisitorRoomResponse(): CreateVisitorRoomResponse {
-  return { status: undefined, roomToken: "" };
+  return {
+    status: undefined,
+    roomToken: "",
+    config: undefined,
+    participants: [],
+    moderated: false,
+    ops: [],
+    voiced: [],
+  };
 }
 
 export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = {
@@ -4425,6 +5924,21 @@ export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = 
     }
     if (message.roomToken !== "") {
       writer.uint32(18).string(message.roomToken);
+    }
+    if (message.config !== undefined) {
+      WidgetConfig.encode(message.config, writer.uint32(26).fork()).join();
+    }
+    for (const v of message.participants) {
+      writer.uint32(34).string(v!);
+    }
+    if (message.moderated !== false) {
+      writer.uint32(40).bool(message.moderated);
+    }
+    for (const v of message.ops) {
+      writer.uint32(50).string(v!);
+    }
+    for (const v of message.voiced) {
+      writer.uint32(58).string(v!);
     }
     return writer;
   },
@@ -4452,6 +5966,46 @@ export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = 
           message.roomToken = reader.string();
           continue;
         }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.config = WidgetConfig.decode(reader, reader.uint32());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.participants.push(reader.string());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.moderated = reader.bool();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.ops.push(reader.string());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.voiced.push(reader.string());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -4469,6 +6023,13 @@ export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = 
         : isSet(object.room_token)
         ? globalThis.String(object.room_token)
         : "",
+      config: isSet(object.config) ? WidgetConfig.fromJSON(object.config) : undefined,
+      participants: globalThis.Array.isArray(object?.participants)
+        ? object.participants.map((e: any) => globalThis.String(e))
+        : [],
+      moderated: isSet(object.moderated) ? globalThis.Boolean(object.moderated) : false,
+      ops: globalThis.Array.isArray(object?.ops) ? object.ops.map((e: any) => globalThis.String(e)) : [],
+      voiced: globalThis.Array.isArray(object?.voiced) ? object.voiced.map((e: any) => globalThis.String(e)) : [],
     };
   },
 
@@ -4479,6 +6040,21 @@ export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = 
     }
     if (message.roomToken !== "") {
       obj.roomToken = message.roomToken;
+    }
+    if (message.config !== undefined) {
+      obj.config = WidgetConfig.toJSON(message.config);
+    }
+    if (message.participants?.length) {
+      obj.participants = message.participants;
+    }
+    if (message.moderated !== false) {
+      obj.moderated = message.moderated;
+    }
+    if (message.ops?.length) {
+      obj.ops = message.ops;
+    }
+    if (message.voiced?.length) {
+      obj.voiced = message.voiced;
     }
     return obj;
   },
@@ -4492,6 +6068,13 @@ export const CreateVisitorRoomResponse: MessageFns<CreateVisitorRoomResponse> = 
       ? ResponseStatus.fromPartial(object.status)
       : undefined;
     message.roomToken = object.roomToken ?? "";
+    message.config = (object.config !== undefined && object.config !== null)
+      ? WidgetConfig.fromPartial(object.config)
+      : undefined;
+    message.participants = object.participants?.map((e) => e) || [];
+    message.moderated = object.moderated ?? false;
+    message.ops = object.ops?.map((e) => e) || [];
+    message.voiced = object.voiced?.map((e) => e) || [];
     return message;
   },
 };
@@ -6833,118 +8416,6 @@ export const RequestJoinResponse: MessageFns<RequestJoinResponse> = {
   },
 };
 
-function createBaseJoinRequestedEvent(): JoinRequestedEvent {
-  return { chatId: "", identity: "", name: "", ts: 0 };
-}
-
-export const JoinRequestedEvent: MessageFns<JoinRequestedEvent> = {
-  encode(message: JoinRequestedEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
-    if (message.chatId !== "") {
-      writer.uint32(10).string(message.chatId);
-    }
-    if (message.identity !== "") {
-      writer.uint32(18).string(message.identity);
-    }
-    if (message.name !== "") {
-      writer.uint32(26).string(message.name);
-    }
-    if (message.ts !== 0) {
-      writer.uint32(32).int64(message.ts);
-    }
-    return writer;
-  },
-
-  decode(input: BinaryReader | Uint8Array, length?: number): JoinRequestedEvent {
-    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
-    const end = length === undefined ? reader.len : reader.pos + length;
-    const message = createBaseJoinRequestedEvent();
-    while (reader.pos < end) {
-      const tag = reader.uint32();
-      switch (tag >>> 3) {
-        case 1: {
-          if (tag !== 10) {
-            break;
-          }
-
-          message.chatId = reader.string();
-          continue;
-        }
-        case 2: {
-          if (tag !== 18) {
-            break;
-          }
-
-          message.identity = reader.string();
-          continue;
-        }
-        case 3: {
-          if (tag !== 26) {
-            break;
-          }
-
-          message.name = reader.string();
-          continue;
-        }
-        case 4: {
-          if (tag !== 32) {
-            break;
-          }
-
-          message.ts = longToNumber(reader.int64());
-          continue;
-        }
-      }
-      if ((tag & 7) === 4 || tag === 0) {
-        break;
-      }
-      reader.skip(tag & 7);
-    }
-    return message;
-  },
-
-  fromJSON(object: any): JoinRequestedEvent {
-    return {
-      chatId: isSet(object.chatId)
-        ? globalThis.String(object.chatId)
-        : isSet(object.chat_id)
-        ? globalThis.String(object.chat_id)
-        : "",
-      identity: isSet(object.identity) ? globalThis.String(object.identity) : "",
-      name: isSet(object.name) ? globalThis.String(object.name) : "",
-      ts: isSet(object.ts) ? globalThis.Number(object.ts) : 0,
-    };
-  },
-
-  toJSON(message: JoinRequestedEvent): unknown {
-    const obj: any = {};
-    if (message.chatId !== "") {
-      obj.chatId = message.chatId;
-    }
-    if (message.identity !== "") {
-      obj.identity = message.identity;
-    }
-    if (message.name !== "") {
-      obj.name = message.name;
-    }
-    if (message.ts !== 0) {
-      obj.ts = Math.round(message.ts);
-    }
-    return obj;
-  },
-
-  create<I extends Exact<DeepPartial<JoinRequestedEvent>, I>>(base?: I): JoinRequestedEvent {
-    return JoinRequestedEvent.fromPartial(base ?? ({} as any));
-  },
-  fromPartial<I extends Exact<DeepPartial<JoinRequestedEvent>, I>>(object: I): JoinRequestedEvent {
-    const message = createBaseJoinRequestedEvent();
-    message.chatId = object.chatId ?? "";
-    message.identity = object.identity ?? "";
-    message.name = object.name ?? "";
-    message.ts = object.ts ?? 0;
-    return message;
-  },
-};
-
 function createBaseDenyJoinRequest(): DenyJoinRequest {
   return { chatId: "", remoteIdentity: "" };
 }
@@ -7143,6 +8614,118 @@ export const DenyJoinResponse: MessageFns<DenyJoinResponse> = {
     message.chatId = object.chatId ?? "";
     message.remoteIdentity = object.remoteIdentity ?? "";
     message.name = object.name ?? "";
+    return message;
+  },
+};
+
+function createBaseJoinRequestedEvent(): JoinRequestedEvent {
+  return { chatId: "", identity: "", name: "", ts: 0 };
+}
+
+export const JoinRequestedEvent: MessageFns<JoinRequestedEvent> = {
+  encode(message: JoinRequestedEvent, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    if (message.identity !== "") {
+      writer.uint32(18).string(message.identity);
+    }
+    if (message.name !== "") {
+      writer.uint32(26).string(message.name);
+    }
+    if (message.ts !== 0) {
+      writer.uint32(32).int64(message.ts);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): JoinRequestedEvent {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseJoinRequestedEvent();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.identity = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.ts = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): JoinRequestedEvent {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      identity: isSet(object.identity) ? globalThis.String(object.identity) : "",
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      ts: isSet(object.ts) ? globalThis.Number(object.ts) : 0,
+    };
+  },
+
+  toJSON(message: JoinRequestedEvent): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.identity !== "") {
+      obj.identity = message.identity;
+    }
+    if (message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.ts !== 0) {
+      obj.ts = Math.round(message.ts);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<JoinRequestedEvent>, I>>(base?: I): JoinRequestedEvent {
+    return JoinRequestedEvent.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<JoinRequestedEvent>, I>>(object: I): JoinRequestedEvent {
+    const message = createBaseJoinRequestedEvent();
+    message.chatId = object.chatId ?? "";
+    message.identity = object.identity ?? "";
+    message.name = object.name ?? "";
+    message.ts = object.ts ?? 0;
     return message;
   },
 };
@@ -7791,6 +9374,15 @@ function createBaseServerMessage(): ServerMessage {
     listDevicesResponse: undefined,
     denyJoinResponse: undefined,
     joinDeniedEvent: undefined,
+    syncHistoryRequest: undefined,
+    syncHistoryFetch: undefined,
+    syncHistoryAccept: undefined,
+    syncHistoryReject: undefined,
+    syncHistoryChunk: undefined,
+    syncHistoryDone: undefined,
+    updateWidgetConfigResponse: undefined,
+    subscribePublicChannelResponse: undefined,
+    moderateChannelResponse: undefined,
   };
 }
 
@@ -7975,6 +9567,33 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.joinDeniedEvent !== undefined) {
       JoinDeniedEvent.encode(message.joinDeniedEvent, writer.uint32(490).fork()).join();
+    }
+    if (message.syncHistoryRequest !== undefined) {
+      SyncHistoryRequest.encode(message.syncHistoryRequest, writer.uint32(498).fork()).join();
+    }
+    if (message.syncHistoryFetch !== undefined) {
+      SyncHistoryFetch.encode(message.syncHistoryFetch, writer.uint32(506).fork()).join();
+    }
+    if (message.syncHistoryAccept !== undefined) {
+      SyncHistoryAccept.encode(message.syncHistoryAccept, writer.uint32(514).fork()).join();
+    }
+    if (message.syncHistoryReject !== undefined) {
+      SyncHistoryReject.encode(message.syncHistoryReject, writer.uint32(522).fork()).join();
+    }
+    if (message.syncHistoryChunk !== undefined) {
+      SyncHistoryChunk.encode(message.syncHistoryChunk, writer.uint32(530).fork()).join();
+    }
+    if (message.syncHistoryDone !== undefined) {
+      SyncHistoryDone.encode(message.syncHistoryDone, writer.uint32(538).fork()).join();
+    }
+    if (message.updateWidgetConfigResponse !== undefined) {
+      UpdateWidgetConfigResponse.encode(message.updateWidgetConfigResponse, writer.uint32(546).fork()).join();
+    }
+    if (message.subscribePublicChannelResponse !== undefined) {
+      SubscribePublicChannelResponse.encode(message.subscribePublicChannelResponse, writer.uint32(554).fork()).join();
+    }
+    if (message.moderateChannelResponse !== undefined) {
+      ModerateChannelResponse.encode(message.moderateChannelResponse, writer.uint32(562).fork()).join();
     }
     return writer;
   },
@@ -8466,6 +10085,78 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.joinDeniedEvent = JoinDeniedEvent.decode(reader, reader.uint32());
           continue;
         }
+        case 62: {
+          if (tag !== 498) {
+            break;
+          }
+
+          message.syncHistoryRequest = SyncHistoryRequest.decode(reader, reader.uint32());
+          continue;
+        }
+        case 63: {
+          if (tag !== 506) {
+            break;
+          }
+
+          message.syncHistoryFetch = SyncHistoryFetch.decode(reader, reader.uint32());
+          continue;
+        }
+        case 64: {
+          if (tag !== 514) {
+            break;
+          }
+
+          message.syncHistoryAccept = SyncHistoryAccept.decode(reader, reader.uint32());
+          continue;
+        }
+        case 65: {
+          if (tag !== 522) {
+            break;
+          }
+
+          message.syncHistoryReject = SyncHistoryReject.decode(reader, reader.uint32());
+          continue;
+        }
+        case 66: {
+          if (tag !== 530) {
+            break;
+          }
+
+          message.syncHistoryChunk = SyncHistoryChunk.decode(reader, reader.uint32());
+          continue;
+        }
+        case 67: {
+          if (tag !== 538) {
+            break;
+          }
+
+          message.syncHistoryDone = SyncHistoryDone.decode(reader, reader.uint32());
+          continue;
+        }
+        case 68: {
+          if (tag !== 546) {
+            break;
+          }
+
+          message.updateWidgetConfigResponse = UpdateWidgetConfigResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 69: {
+          if (tag !== 554) {
+            break;
+          }
+
+          message.subscribePublicChannelResponse = SubscribePublicChannelResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 70: {
+          if (tag !== 562) {
+            break;
+          }
+
+          message.moderateChannelResponse = ModerateChannelResponse.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -8765,6 +10456,51 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.join_denied_event)
         ? JoinDeniedEvent.fromJSON(object.join_denied_event)
         : undefined,
+      syncHistoryRequest: isSet(object.syncHistoryRequest)
+        ? SyncHistoryRequest.fromJSON(object.syncHistoryRequest)
+        : isSet(object.sync_history_request)
+        ? SyncHistoryRequest.fromJSON(object.sync_history_request)
+        : undefined,
+      syncHistoryFetch: isSet(object.syncHistoryFetch)
+        ? SyncHistoryFetch.fromJSON(object.syncHistoryFetch)
+        : isSet(object.sync_history_fetch)
+        ? SyncHistoryFetch.fromJSON(object.sync_history_fetch)
+        : undefined,
+      syncHistoryAccept: isSet(object.syncHistoryAccept)
+        ? SyncHistoryAccept.fromJSON(object.syncHistoryAccept)
+        : isSet(object.sync_history_accept)
+        ? SyncHistoryAccept.fromJSON(object.sync_history_accept)
+        : undefined,
+      syncHistoryReject: isSet(object.syncHistoryReject)
+        ? SyncHistoryReject.fromJSON(object.syncHistoryReject)
+        : isSet(object.sync_history_reject)
+        ? SyncHistoryReject.fromJSON(object.sync_history_reject)
+        : undefined,
+      syncHistoryChunk: isSet(object.syncHistoryChunk)
+        ? SyncHistoryChunk.fromJSON(object.syncHistoryChunk)
+        : isSet(object.sync_history_chunk)
+        ? SyncHistoryChunk.fromJSON(object.sync_history_chunk)
+        : undefined,
+      syncHistoryDone: isSet(object.syncHistoryDone)
+        ? SyncHistoryDone.fromJSON(object.syncHistoryDone)
+        : isSet(object.sync_history_done)
+        ? SyncHistoryDone.fromJSON(object.sync_history_done)
+        : undefined,
+      updateWidgetConfigResponse: isSet(object.updateWidgetConfigResponse)
+        ? UpdateWidgetConfigResponse.fromJSON(object.updateWidgetConfigResponse)
+        : isSet(object.update_widget_config_response)
+        ? UpdateWidgetConfigResponse.fromJSON(object.update_widget_config_response)
+        : undefined,
+      subscribePublicChannelResponse: isSet(object.subscribePublicChannelResponse)
+        ? SubscribePublicChannelResponse.fromJSON(object.subscribePublicChannelResponse)
+        : isSet(object.subscribe_public_channel_response)
+        ? SubscribePublicChannelResponse.fromJSON(object.subscribe_public_channel_response)
+        : undefined,
+      moderateChannelResponse: isSet(object.moderateChannelResponse)
+        ? ModerateChannelResponse.fromJSON(object.moderateChannelResponse)
+        : isSet(object.moderate_channel_response)
+        ? ModerateChannelResponse.fromJSON(object.moderate_channel_response)
+        : undefined,
     };
   },
 
@@ -8951,6 +10687,35 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.joinDeniedEvent !== undefined) {
       obj.joinDeniedEvent = JoinDeniedEvent.toJSON(message.joinDeniedEvent);
+    }
+    if (message.syncHistoryRequest !== undefined) {
+      obj.syncHistoryRequest = SyncHistoryRequest.toJSON(message.syncHistoryRequest);
+    }
+    if (message.syncHistoryFetch !== undefined) {
+      obj.syncHistoryFetch = SyncHistoryFetch.toJSON(message.syncHistoryFetch);
+    }
+    if (message.syncHistoryAccept !== undefined) {
+      obj.syncHistoryAccept = SyncHistoryAccept.toJSON(message.syncHistoryAccept);
+    }
+    if (message.syncHistoryReject !== undefined) {
+      obj.syncHistoryReject = SyncHistoryReject.toJSON(message.syncHistoryReject);
+    }
+    if (message.syncHistoryChunk !== undefined) {
+      obj.syncHistoryChunk = SyncHistoryChunk.toJSON(message.syncHistoryChunk);
+    }
+    if (message.syncHistoryDone !== undefined) {
+      obj.syncHistoryDone = SyncHistoryDone.toJSON(message.syncHistoryDone);
+    }
+    if (message.updateWidgetConfigResponse !== undefined) {
+      obj.updateWidgetConfigResponse = UpdateWidgetConfigResponse.toJSON(message.updateWidgetConfigResponse);
+    }
+    if (message.subscribePublicChannelResponse !== undefined) {
+      obj.subscribePublicChannelResponse = SubscribePublicChannelResponse.toJSON(
+        message.subscribePublicChannelResponse,
+      );
+    }
+    if (message.moderateChannelResponse !== undefined) {
+      obj.moderateChannelResponse = ModerateChannelResponse.toJSON(message.moderateChannelResponse);
     }
     return obj;
   },
@@ -9165,6 +10930,36 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     message.joinDeniedEvent = (object.joinDeniedEvent !== undefined && object.joinDeniedEvent !== null)
       ? JoinDeniedEvent.fromPartial(object.joinDeniedEvent)
       : undefined;
+    message.syncHistoryRequest = (object.syncHistoryRequest !== undefined && object.syncHistoryRequest !== null)
+      ? SyncHistoryRequest.fromPartial(object.syncHistoryRequest)
+      : undefined;
+    message.syncHistoryFetch = (object.syncHistoryFetch !== undefined && object.syncHistoryFetch !== null)
+      ? SyncHistoryFetch.fromPartial(object.syncHistoryFetch)
+      : undefined;
+    message.syncHistoryAccept = (object.syncHistoryAccept !== undefined && object.syncHistoryAccept !== null)
+      ? SyncHistoryAccept.fromPartial(object.syncHistoryAccept)
+      : undefined;
+    message.syncHistoryReject = (object.syncHistoryReject !== undefined && object.syncHistoryReject !== null)
+      ? SyncHistoryReject.fromPartial(object.syncHistoryReject)
+      : undefined;
+    message.syncHistoryChunk = (object.syncHistoryChunk !== undefined && object.syncHistoryChunk !== null)
+      ? SyncHistoryChunk.fromPartial(object.syncHistoryChunk)
+      : undefined;
+    message.syncHistoryDone = (object.syncHistoryDone !== undefined && object.syncHistoryDone !== null)
+      ? SyncHistoryDone.fromPartial(object.syncHistoryDone)
+      : undefined;
+    message.updateWidgetConfigResponse =
+      (object.updateWidgetConfigResponse !== undefined && object.updateWidgetConfigResponse !== null)
+        ? UpdateWidgetConfigResponse.fromPartial(object.updateWidgetConfigResponse)
+        : undefined;
+    message.subscribePublicChannelResponse =
+      (object.subscribePublicChannelResponse !== undefined && object.subscribePublicChannelResponse !== null)
+        ? SubscribePublicChannelResponse.fromPartial(object.subscribePublicChannelResponse)
+        : undefined;
+    message.moderateChannelResponse =
+      (object.moderateChannelResponse !== undefined && object.moderateChannelResponse !== null)
+        ? ModerateChannelResponse.fromPartial(object.moderateChannelResponse)
+        : undefined;
     return message;
   },
 };
@@ -20112,6 +21907,1479 @@ export const MetricsResponse: MessageFns<MetricsResponse> = {
     message.metrics = (object.metrics !== undefined && object.metrics !== null)
       ? MetricsData.fromPartial(object.metrics)
       : undefined;
+    return message;
+  },
+};
+
+function createBaseSyncHistoryRequest(): SyncHistoryRequest {
+  return {
+    requesterDeviceId: "",
+    protocolVersion: "",
+    chatIds: [],
+    requesterPubkey: "",
+    challenge: "",
+    requesterDevicePub: "",
+  };
+}
+
+export const SyncHistoryRequest: MessageFns<SyncHistoryRequest> = {
+  encode(message: SyncHistoryRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requesterDeviceId !== "") {
+      writer.uint32(10).string(message.requesterDeviceId);
+    }
+    if (message.protocolVersion !== "") {
+      writer.uint32(18).string(message.protocolVersion);
+    }
+    for (const v of message.chatIds) {
+      writer.uint32(26).string(v!);
+    }
+    if (message.requesterPubkey !== "") {
+      writer.uint32(34).string(message.requesterPubkey);
+    }
+    if (message.challenge !== "") {
+      writer.uint32(42).string(message.challenge);
+    }
+    if (message.requesterDevicePub !== "") {
+      writer.uint32(50).string(message.requesterDevicePub);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requesterDeviceId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.protocolVersion = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.chatIds.push(reader.string());
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.requesterPubkey = reader.string();
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.challenge = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.requesterDevicePub = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryRequest {
+    return {
+      requesterDeviceId: isSet(object.requesterDeviceId)
+        ? globalThis.String(object.requesterDeviceId)
+        : isSet(object.requester_device_id)
+        ? globalThis.String(object.requester_device_id)
+        : "",
+      protocolVersion: isSet(object.protocolVersion)
+        ? globalThis.String(object.protocolVersion)
+        : isSet(object.protocol_version)
+        ? globalThis.String(object.protocol_version)
+        : "",
+      chatIds: globalThis.Array.isArray(object?.chatIds)
+        ? object.chatIds.map((e: any) => globalThis.String(e))
+        : globalThis.Array.isArray(object?.chat_ids)
+        ? object.chat_ids.map((e: any) => globalThis.String(e))
+        : [],
+      requesterPubkey: isSet(object.requesterPubkey)
+        ? globalThis.String(object.requesterPubkey)
+        : isSet(object.requester_pubkey)
+        ? globalThis.String(object.requester_pubkey)
+        : "",
+      challenge: isSet(object.challenge) ? globalThis.String(object.challenge) : "",
+      requesterDevicePub: isSet(object.requesterDevicePub)
+        ? globalThis.String(object.requesterDevicePub)
+        : isSet(object.requester_device_pub)
+        ? globalThis.String(object.requester_device_pub)
+        : "",
+    };
+  },
+
+  toJSON(message: SyncHistoryRequest): unknown {
+    const obj: any = {};
+    if (message.requesterDeviceId !== "") {
+      obj.requesterDeviceId = message.requesterDeviceId;
+    }
+    if (message.protocolVersion !== "") {
+      obj.protocolVersion = message.protocolVersion;
+    }
+    if (message.chatIds?.length) {
+      obj.chatIds = message.chatIds;
+    }
+    if (message.requesterPubkey !== "") {
+      obj.requesterPubkey = message.requesterPubkey;
+    }
+    if (message.challenge !== "") {
+      obj.challenge = message.challenge;
+    }
+    if (message.requesterDevicePub !== "") {
+      obj.requesterDevicePub = message.requesterDevicePub;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryRequest>, I>>(base?: I): SyncHistoryRequest {
+    return SyncHistoryRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryRequest>, I>>(object: I): SyncHistoryRequest {
+    const message = createBaseSyncHistoryRequest();
+    message.requesterDeviceId = object.requesterDeviceId ?? "";
+    message.protocolVersion = object.protocolVersion ?? "";
+    message.chatIds = object.chatIds?.map((e) => e) || [];
+    message.requesterPubkey = object.requesterPubkey ?? "";
+    message.challenge = object.challenge ?? "";
+    message.requesterDevicePub = object.requesterDevicePub ?? "";
+    return message;
+  },
+};
+
+function createBaseSyncChatRange(): SyncChatRange {
+  return { chatId: "", minTs: 0, maxTs: 0, count: 0 };
+}
+
+export const SyncChatRange: MessageFns<SyncChatRange> = {
+  encode(message: SyncChatRange, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    if (message.minTs !== 0) {
+      writer.uint32(16).int64(message.minTs);
+    }
+    if (message.maxTs !== 0) {
+      writer.uint32(24).int64(message.maxTs);
+    }
+    if (message.count !== 0) {
+      writer.uint32(32).int32(message.count);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncChatRange {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncChatRange();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.minTs = longToNumber(reader.int64());
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.maxTs = longToNumber(reader.int64());
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.count = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncChatRange {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      minTs: isSet(object.minTs)
+        ? globalThis.Number(object.minTs)
+        : isSet(object.min_ts)
+        ? globalThis.Number(object.min_ts)
+        : 0,
+      maxTs: isSet(object.maxTs)
+        ? globalThis.Number(object.maxTs)
+        : isSet(object.max_ts)
+        ? globalThis.Number(object.max_ts)
+        : 0,
+      count: isSet(object.count) ? globalThis.Number(object.count) : 0,
+    };
+  },
+
+  toJSON(message: SyncChatRange): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.minTs !== 0) {
+      obj.minTs = Math.round(message.minTs);
+    }
+    if (message.maxTs !== 0) {
+      obj.maxTs = Math.round(message.maxTs);
+    }
+    if (message.count !== 0) {
+      obj.count = Math.round(message.count);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncChatRange>, I>>(base?: I): SyncChatRange {
+    return SyncChatRange.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncChatRange>, I>>(object: I): SyncChatRange {
+    const message = createBaseSyncChatRange();
+    message.chatId = object.chatId ?? "";
+    message.minTs = object.minTs ?? 0;
+    message.maxTs = object.maxTs ?? 0;
+    message.count = object.count ?? 0;
+    return message;
+  },
+};
+
+function createBaseSyncSymKeyForChat(): SyncSymKeyForChat {
+  return { chatId: "", ciphertext: "", nonce: "", ephemeralPubkey: "" };
+}
+
+export const SyncSymKeyForChat: MessageFns<SyncSymKeyForChat> = {
+  encode(message: SyncSymKeyForChat, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.chatId !== "") {
+      writer.uint32(10).string(message.chatId);
+    }
+    if (message.ciphertext !== "") {
+      writer.uint32(18).string(message.ciphertext);
+    }
+    if (message.nonce !== "") {
+      writer.uint32(26).string(message.nonce);
+    }
+    if (message.ephemeralPubkey !== "") {
+      writer.uint32(34).string(message.ephemeralPubkey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncSymKeyForChat {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncSymKeyForChat();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.ciphertext = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.nonce = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.ephemeralPubkey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncSymKeyForChat {
+    return {
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      ciphertext: isSet(object.ciphertext) ? globalThis.String(object.ciphertext) : "",
+      nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "",
+      ephemeralPubkey: isSet(object.ephemeralPubkey)
+        ? globalThis.String(object.ephemeralPubkey)
+        : isSet(object.ephemeral_pubkey)
+        ? globalThis.String(object.ephemeral_pubkey)
+        : "",
+    };
+  },
+
+  toJSON(message: SyncSymKeyForChat): unknown {
+    const obj: any = {};
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.ciphertext !== "") {
+      obj.ciphertext = message.ciphertext;
+    }
+    if (message.nonce !== "") {
+      obj.nonce = message.nonce;
+    }
+    if (message.ephemeralPubkey !== "") {
+      obj.ephemeralPubkey = message.ephemeralPubkey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncSymKeyForChat>, I>>(base?: I): SyncSymKeyForChat {
+    return SyncSymKeyForChat.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncSymKeyForChat>, I>>(object: I): SyncSymKeyForChat {
+    const message = createBaseSyncSymKeyForChat();
+    message.chatId = object.chatId ?? "";
+    message.ciphertext = object.ciphertext ?? "";
+    message.nonce = object.nonce ?? "";
+    message.ephemeralPubkey = object.ephemeralPubkey ?? "";
+    return message;
+  },
+};
+
+function createBaseSyncHistoryAccept(): SyncHistoryAccept {
+  return {
+    requesterDeviceId: "",
+    responderDeviceId: "",
+    protocolVersion: "",
+    ranges: [],
+    challengeResponse: "",
+    challengeNonce: "",
+    responderDevicePub: "",
+    sealedSymKeys: [],
+  };
+}
+
+export const SyncHistoryAccept: MessageFns<SyncHistoryAccept> = {
+  encode(message: SyncHistoryAccept, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requesterDeviceId !== "") {
+      writer.uint32(10).string(message.requesterDeviceId);
+    }
+    if (message.responderDeviceId !== "") {
+      writer.uint32(18).string(message.responderDeviceId);
+    }
+    if (message.protocolVersion !== "") {
+      writer.uint32(26).string(message.protocolVersion);
+    }
+    for (const v of message.ranges) {
+      SyncChatRange.encode(v!, writer.uint32(34).fork()).join();
+    }
+    if (message.challengeResponse !== "") {
+      writer.uint32(42).string(message.challengeResponse);
+    }
+    if (message.challengeNonce !== "") {
+      writer.uint32(50).string(message.challengeNonce);
+    }
+    if (message.responderDevicePub !== "") {
+      writer.uint32(58).string(message.responderDevicePub);
+    }
+    for (const v of message.sealedSymKeys) {
+      SyncSymKeyForChat.encode(v!, writer.uint32(66).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryAccept {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryAccept();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requesterDeviceId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.responderDeviceId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.protocolVersion = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.ranges.push(SyncChatRange.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.challengeResponse = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.challengeNonce = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.responderDevicePub = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.sealedSymKeys.push(SyncSymKeyForChat.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryAccept {
+    return {
+      requesterDeviceId: isSet(object.requesterDeviceId)
+        ? globalThis.String(object.requesterDeviceId)
+        : isSet(object.requester_device_id)
+        ? globalThis.String(object.requester_device_id)
+        : "",
+      responderDeviceId: isSet(object.responderDeviceId)
+        ? globalThis.String(object.responderDeviceId)
+        : isSet(object.responder_device_id)
+        ? globalThis.String(object.responder_device_id)
+        : "",
+      protocolVersion: isSet(object.protocolVersion)
+        ? globalThis.String(object.protocolVersion)
+        : isSet(object.protocol_version)
+        ? globalThis.String(object.protocol_version)
+        : "",
+      ranges: globalThis.Array.isArray(object?.ranges) ? object.ranges.map((e: any) => SyncChatRange.fromJSON(e)) : [],
+      challengeResponse: isSet(object.challengeResponse)
+        ? globalThis.String(object.challengeResponse)
+        : isSet(object.challenge_response)
+        ? globalThis.String(object.challenge_response)
+        : "",
+      challengeNonce: isSet(object.challengeNonce)
+        ? globalThis.String(object.challengeNonce)
+        : isSet(object.challenge_nonce)
+        ? globalThis.String(object.challenge_nonce)
+        : "",
+      responderDevicePub: isSet(object.responderDevicePub)
+        ? globalThis.String(object.responderDevicePub)
+        : isSet(object.responder_device_pub)
+        ? globalThis.String(object.responder_device_pub)
+        : "",
+      sealedSymKeys: globalThis.Array.isArray(object?.sealedSymKeys)
+        ? object.sealedSymKeys.map((e: any) => SyncSymKeyForChat.fromJSON(e))
+        : globalThis.Array.isArray(object?.sealed_sym_keys)
+        ? object.sealed_sym_keys.map((e: any) => SyncSymKeyForChat.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: SyncHistoryAccept): unknown {
+    const obj: any = {};
+    if (message.requesterDeviceId !== "") {
+      obj.requesterDeviceId = message.requesterDeviceId;
+    }
+    if (message.responderDeviceId !== "") {
+      obj.responderDeviceId = message.responderDeviceId;
+    }
+    if (message.protocolVersion !== "") {
+      obj.protocolVersion = message.protocolVersion;
+    }
+    if (message.ranges?.length) {
+      obj.ranges = message.ranges.map((e) => SyncChatRange.toJSON(e));
+    }
+    if (message.challengeResponse !== "") {
+      obj.challengeResponse = message.challengeResponse;
+    }
+    if (message.challengeNonce !== "") {
+      obj.challengeNonce = message.challengeNonce;
+    }
+    if (message.responderDevicePub !== "") {
+      obj.responderDevicePub = message.responderDevicePub;
+    }
+    if (message.sealedSymKeys?.length) {
+      obj.sealedSymKeys = message.sealedSymKeys.map((e) => SyncSymKeyForChat.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryAccept>, I>>(base?: I): SyncHistoryAccept {
+    return SyncHistoryAccept.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryAccept>, I>>(object: I): SyncHistoryAccept {
+    const message = createBaseSyncHistoryAccept();
+    message.requesterDeviceId = object.requesterDeviceId ?? "";
+    message.responderDeviceId = object.responderDeviceId ?? "";
+    message.protocolVersion = object.protocolVersion ?? "";
+    message.ranges = object.ranges?.map((e) => SyncChatRange.fromPartial(e)) || [];
+    message.challengeResponse = object.challengeResponse ?? "";
+    message.challengeNonce = object.challengeNonce ?? "";
+    message.responderDevicePub = object.responderDevicePub ?? "";
+    message.sealedSymKeys = object.sealedSymKeys?.map((e) => SyncSymKeyForChat.fromPartial(e)) || [];
+    return message;
+  },
+};
+
+function createBaseSyncHistoryReject(): SyncHistoryReject {
+  return { requesterDeviceId: "", reason: "" };
+}
+
+export const SyncHistoryReject: MessageFns<SyncHistoryReject> = {
+  encode(message: SyncHistoryReject, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requesterDeviceId !== "") {
+      writer.uint32(10).string(message.requesterDeviceId);
+    }
+    if (message.reason !== "") {
+      writer.uint32(18).string(message.reason);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryReject {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryReject();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requesterDeviceId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.reason = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryReject {
+    return {
+      requesterDeviceId: isSet(object.requesterDeviceId)
+        ? globalThis.String(object.requesterDeviceId)
+        : isSet(object.requester_device_id)
+        ? globalThis.String(object.requester_device_id)
+        : "",
+      reason: isSet(object.reason) ? globalThis.String(object.reason) : "",
+    };
+  },
+
+  toJSON(message: SyncHistoryReject): unknown {
+    const obj: any = {};
+    if (message.requesterDeviceId !== "") {
+      obj.requesterDeviceId = message.requesterDeviceId;
+    }
+    if (message.reason !== "") {
+      obj.reason = message.reason;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryReject>, I>>(base?: I): SyncHistoryReject {
+    return SyncHistoryReject.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryReject>, I>>(object: I): SyncHistoryReject {
+    const message = createBaseSyncHistoryReject();
+    message.requesterDeviceId = object.requesterDeviceId ?? "";
+    message.reason = object.reason ?? "";
+    return message;
+  },
+};
+
+function createBaseSyncHistoryFetch(): SyncHistoryFetch {
+  return { requesterDeviceId: "", targetDeviceId: "", chatId: "", fromTs: 0, toTs: 0, limit: 0, requesterPubkey: "" };
+}
+
+export const SyncHistoryFetch: MessageFns<SyncHistoryFetch> = {
+  encode(message: SyncHistoryFetch, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requesterDeviceId !== "") {
+      writer.uint32(10).string(message.requesterDeviceId);
+    }
+    if (message.targetDeviceId !== "") {
+      writer.uint32(18).string(message.targetDeviceId);
+    }
+    if (message.chatId !== "") {
+      writer.uint32(26).string(message.chatId);
+    }
+    if (message.fromTs !== 0) {
+      writer.uint32(32).int64(message.fromTs);
+    }
+    if (message.toTs !== 0) {
+      writer.uint32(40).int64(message.toTs);
+    }
+    if (message.limit !== 0) {
+      writer.uint32(48).int32(message.limit);
+    }
+    if (message.requesterPubkey !== "") {
+      writer.uint32(58).string(message.requesterPubkey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryFetch {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryFetch();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requesterDeviceId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.targetDeviceId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.fromTs = longToNumber(reader.int64());
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.toTs = longToNumber(reader.int64());
+          continue;
+        }
+        case 6: {
+          if (tag !== 48) {
+            break;
+          }
+
+          message.limit = reader.int32();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.requesterPubkey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryFetch {
+    return {
+      requesterDeviceId: isSet(object.requesterDeviceId)
+        ? globalThis.String(object.requesterDeviceId)
+        : isSet(object.requester_device_id)
+        ? globalThis.String(object.requester_device_id)
+        : "",
+      targetDeviceId: isSet(object.targetDeviceId)
+        ? globalThis.String(object.targetDeviceId)
+        : isSet(object.target_device_id)
+        ? globalThis.String(object.target_device_id)
+        : "",
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      fromTs: isSet(object.fromTs)
+        ? globalThis.Number(object.fromTs)
+        : isSet(object.from_ts)
+        ? globalThis.Number(object.from_ts)
+        : 0,
+      toTs: isSet(object.toTs)
+        ? globalThis.Number(object.toTs)
+        : isSet(object.to_ts)
+        ? globalThis.Number(object.to_ts)
+        : 0,
+      limit: isSet(object.limit) ? globalThis.Number(object.limit) : 0,
+      requesterPubkey: isSet(object.requesterPubkey)
+        ? globalThis.String(object.requesterPubkey)
+        : isSet(object.requester_pubkey)
+        ? globalThis.String(object.requester_pubkey)
+        : "",
+    };
+  },
+
+  toJSON(message: SyncHistoryFetch): unknown {
+    const obj: any = {};
+    if (message.requesterDeviceId !== "") {
+      obj.requesterDeviceId = message.requesterDeviceId;
+    }
+    if (message.targetDeviceId !== "") {
+      obj.targetDeviceId = message.targetDeviceId;
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.fromTs !== 0) {
+      obj.fromTs = Math.round(message.fromTs);
+    }
+    if (message.toTs !== 0) {
+      obj.toTs = Math.round(message.toTs);
+    }
+    if (message.limit !== 0) {
+      obj.limit = Math.round(message.limit);
+    }
+    if (message.requesterPubkey !== "") {
+      obj.requesterPubkey = message.requesterPubkey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryFetch>, I>>(base?: I): SyncHistoryFetch {
+    return SyncHistoryFetch.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryFetch>, I>>(object: I): SyncHistoryFetch {
+    const message = createBaseSyncHistoryFetch();
+    message.requesterDeviceId = object.requesterDeviceId ?? "";
+    message.targetDeviceId = object.targetDeviceId ?? "";
+    message.chatId = object.chatId ?? "";
+    message.fromTs = object.fromTs ?? 0;
+    message.toTs = object.toTs ?? 0;
+    message.limit = object.limit ?? 0;
+    message.requesterPubkey = object.requesterPubkey ?? "";
+    return message;
+  },
+};
+
+function createBaseSyncHistoryEntry(): SyncHistoryEntry {
+  return {
+    msgId: "",
+    chatId: "",
+    sender: "",
+    ts: 0,
+    ciphertext: "",
+    nonce: "",
+    replyToMsgId: "",
+    edited: false,
+    editedAt: 0,
+    removed: false,
+    removedAt: 0,
+    sealedText: "",
+    sealedTextNonce: "",
+    reactionsJson: "",
+  };
+}
+
+export const SyncHistoryEntry: MessageFns<SyncHistoryEntry> = {
+  encode(message: SyncHistoryEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.msgId !== "") {
+      writer.uint32(10).string(message.msgId);
+    }
+    if (message.chatId !== "") {
+      writer.uint32(18).string(message.chatId);
+    }
+    if (message.sender !== "") {
+      writer.uint32(26).string(message.sender);
+    }
+    if (message.ts !== 0) {
+      writer.uint32(32).int64(message.ts);
+    }
+    if (message.ciphertext !== "") {
+      writer.uint32(42).string(message.ciphertext);
+    }
+    if (message.nonce !== "") {
+      writer.uint32(50).string(message.nonce);
+    }
+    if (message.replyToMsgId !== "") {
+      writer.uint32(58).string(message.replyToMsgId);
+    }
+    if (message.edited !== false) {
+      writer.uint32(64).bool(message.edited);
+    }
+    if (message.editedAt !== 0) {
+      writer.uint32(72).int64(message.editedAt);
+    }
+    if (message.removed !== false) {
+      writer.uint32(80).bool(message.removed);
+    }
+    if (message.removedAt !== 0) {
+      writer.uint32(88).int64(message.removedAt);
+    }
+    if (message.sealedText !== "") {
+      writer.uint32(98).string(message.sealedText);
+    }
+    if (message.sealedTextNonce !== "") {
+      writer.uint32(106).string(message.sealedTextNonce);
+    }
+    if (message.reactionsJson !== "") {
+      writer.uint32(114).string(message.reactionsJson);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.msgId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.sender = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.ts = longToNumber(reader.int64());
+          continue;
+        }
+        case 5: {
+          if (tag !== 42) {
+            break;
+          }
+
+          message.ciphertext = reader.string();
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.nonce = reader.string();
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.replyToMsgId = reader.string();
+          continue;
+        }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.edited = reader.bool();
+          continue;
+        }
+        case 9: {
+          if (tag !== 72) {
+            break;
+          }
+
+          message.editedAt = longToNumber(reader.int64());
+          continue;
+        }
+        case 10: {
+          if (tag !== 80) {
+            break;
+          }
+
+          message.removed = reader.bool();
+          continue;
+        }
+        case 11: {
+          if (tag !== 88) {
+            break;
+          }
+
+          message.removedAt = longToNumber(reader.int64());
+          continue;
+        }
+        case 12: {
+          if (tag !== 98) {
+            break;
+          }
+
+          message.sealedText = reader.string();
+          continue;
+        }
+        case 13: {
+          if (tag !== 106) {
+            break;
+          }
+
+          message.sealedTextNonce = reader.string();
+          continue;
+        }
+        case 14: {
+          if (tag !== 114) {
+            break;
+          }
+
+          message.reactionsJson = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryEntry {
+    return {
+      msgId: isSet(object.msgId)
+        ? globalThis.String(object.msgId)
+        : isSet(object.msg_id)
+        ? globalThis.String(object.msg_id)
+        : "",
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      sender: isSet(object.sender) ? globalThis.String(object.sender) : "",
+      ts: isSet(object.ts) ? globalThis.Number(object.ts) : 0,
+      ciphertext: isSet(object.ciphertext) ? globalThis.String(object.ciphertext) : "",
+      nonce: isSet(object.nonce) ? globalThis.String(object.nonce) : "",
+      replyToMsgId: isSet(object.replyToMsgId)
+        ? globalThis.String(object.replyToMsgId)
+        : isSet(object.reply_to_msg_id)
+        ? globalThis.String(object.reply_to_msg_id)
+        : "",
+      edited: isSet(object.edited) ? globalThis.Boolean(object.edited) : false,
+      editedAt: isSet(object.editedAt)
+        ? globalThis.Number(object.editedAt)
+        : isSet(object.edited_at)
+        ? globalThis.Number(object.edited_at)
+        : 0,
+      removed: isSet(object.removed) ? globalThis.Boolean(object.removed) : false,
+      removedAt: isSet(object.removedAt)
+        ? globalThis.Number(object.removedAt)
+        : isSet(object.removed_at)
+        ? globalThis.Number(object.removed_at)
+        : 0,
+      sealedText: isSet(object.sealedText)
+        ? globalThis.String(object.sealedText)
+        : isSet(object.sealed_text)
+        ? globalThis.String(object.sealed_text)
+        : "",
+      sealedTextNonce: isSet(object.sealedTextNonce)
+        ? globalThis.String(object.sealedTextNonce)
+        : isSet(object.sealed_text_nonce)
+        ? globalThis.String(object.sealed_text_nonce)
+        : "",
+      reactionsJson: isSet(object.reactionsJson)
+        ? globalThis.String(object.reactionsJson)
+        : isSet(object.reactions_json)
+        ? globalThis.String(object.reactions_json)
+        : "",
+    };
+  },
+
+  toJSON(message: SyncHistoryEntry): unknown {
+    const obj: any = {};
+    if (message.msgId !== "") {
+      obj.msgId = message.msgId;
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.sender !== "") {
+      obj.sender = message.sender;
+    }
+    if (message.ts !== 0) {
+      obj.ts = Math.round(message.ts);
+    }
+    if (message.ciphertext !== "") {
+      obj.ciphertext = message.ciphertext;
+    }
+    if (message.nonce !== "") {
+      obj.nonce = message.nonce;
+    }
+    if (message.replyToMsgId !== "") {
+      obj.replyToMsgId = message.replyToMsgId;
+    }
+    if (message.edited !== false) {
+      obj.edited = message.edited;
+    }
+    if (message.editedAt !== 0) {
+      obj.editedAt = Math.round(message.editedAt);
+    }
+    if (message.removed !== false) {
+      obj.removed = message.removed;
+    }
+    if (message.removedAt !== 0) {
+      obj.removedAt = Math.round(message.removedAt);
+    }
+    if (message.sealedText !== "") {
+      obj.sealedText = message.sealedText;
+    }
+    if (message.sealedTextNonce !== "") {
+      obj.sealedTextNonce = message.sealedTextNonce;
+    }
+    if (message.reactionsJson !== "") {
+      obj.reactionsJson = message.reactionsJson;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryEntry>, I>>(base?: I): SyncHistoryEntry {
+    return SyncHistoryEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryEntry>, I>>(object: I): SyncHistoryEntry {
+    const message = createBaseSyncHistoryEntry();
+    message.msgId = object.msgId ?? "";
+    message.chatId = object.chatId ?? "";
+    message.sender = object.sender ?? "";
+    message.ts = object.ts ?? 0;
+    message.ciphertext = object.ciphertext ?? "";
+    message.nonce = object.nonce ?? "";
+    message.replyToMsgId = object.replyToMsgId ?? "";
+    message.edited = object.edited ?? false;
+    message.editedAt = object.editedAt ?? 0;
+    message.removed = object.removed ?? false;
+    message.removedAt = object.removedAt ?? 0;
+    message.sealedText = object.sealedText ?? "";
+    message.sealedTextNonce = object.sealedTextNonce ?? "";
+    message.reactionsJson = object.reactionsJson ?? "";
+    return message;
+  },
+};
+
+function createBaseSyncHistoryChunk(): SyncHistoryChunk {
+  return { requesterDeviceId: "", chatId: "", entries: [], hasMore: false, lastTs: 0, responderEphemeralPubkey: "" };
+}
+
+export const SyncHistoryChunk: MessageFns<SyncHistoryChunk> = {
+  encode(message: SyncHistoryChunk, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requesterDeviceId !== "") {
+      writer.uint32(10).string(message.requesterDeviceId);
+    }
+    if (message.chatId !== "") {
+      writer.uint32(18).string(message.chatId);
+    }
+    for (const v of message.entries) {
+      SyncHistoryEntry.encode(v!, writer.uint32(26).fork()).join();
+    }
+    if (message.hasMore !== false) {
+      writer.uint32(32).bool(message.hasMore);
+    }
+    if (message.lastTs !== 0) {
+      writer.uint32(40).int64(message.lastTs);
+    }
+    if (message.responderEphemeralPubkey !== "") {
+      writer.uint32(50).string(message.responderEphemeralPubkey);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryChunk {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryChunk();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requesterDeviceId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.entries.push(SyncHistoryEntry.decode(reader, reader.uint32()));
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.hasMore = reader.bool();
+          continue;
+        }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.lastTs = longToNumber(reader.int64());
+          continue;
+        }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.responderEphemeralPubkey = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryChunk {
+    return {
+      requesterDeviceId: isSet(object.requesterDeviceId)
+        ? globalThis.String(object.requesterDeviceId)
+        : isSet(object.requester_device_id)
+        ? globalThis.String(object.requester_device_id)
+        : "",
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      entries: globalThis.Array.isArray(object?.entries)
+        ? object.entries.map((e: any) => SyncHistoryEntry.fromJSON(e))
+        : [],
+      hasMore: isSet(object.hasMore)
+        ? globalThis.Boolean(object.hasMore)
+        : isSet(object.has_more)
+        ? globalThis.Boolean(object.has_more)
+        : false,
+      lastTs: isSet(object.lastTs)
+        ? globalThis.Number(object.lastTs)
+        : isSet(object.last_ts)
+        ? globalThis.Number(object.last_ts)
+        : 0,
+      responderEphemeralPubkey: isSet(object.responderEphemeralPubkey)
+        ? globalThis.String(object.responderEphemeralPubkey)
+        : isSet(object.responder_ephemeral_pubkey)
+        ? globalThis.String(object.responder_ephemeral_pubkey)
+        : "",
+    };
+  },
+
+  toJSON(message: SyncHistoryChunk): unknown {
+    const obj: any = {};
+    if (message.requesterDeviceId !== "") {
+      obj.requesterDeviceId = message.requesterDeviceId;
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.entries?.length) {
+      obj.entries = message.entries.map((e) => SyncHistoryEntry.toJSON(e));
+    }
+    if (message.hasMore !== false) {
+      obj.hasMore = message.hasMore;
+    }
+    if (message.lastTs !== 0) {
+      obj.lastTs = Math.round(message.lastTs);
+    }
+    if (message.responderEphemeralPubkey !== "") {
+      obj.responderEphemeralPubkey = message.responderEphemeralPubkey;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryChunk>, I>>(base?: I): SyncHistoryChunk {
+    return SyncHistoryChunk.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryChunk>, I>>(object: I): SyncHistoryChunk {
+    const message = createBaseSyncHistoryChunk();
+    message.requesterDeviceId = object.requesterDeviceId ?? "";
+    message.chatId = object.chatId ?? "";
+    message.entries = object.entries?.map((e) => SyncHistoryEntry.fromPartial(e)) || [];
+    message.hasMore = object.hasMore ?? false;
+    message.lastTs = object.lastTs ?? 0;
+    message.responderEphemeralPubkey = object.responderEphemeralPubkey ?? "";
+    return message;
+  },
+};
+
+function createBaseSyncHistoryDone(): SyncHistoryDone {
+  return { requesterDeviceId: "", chatId: "", totalSent: 0, hasMore: false };
+}
+
+export const SyncHistoryDone: MessageFns<SyncHistoryDone> = {
+  encode(message: SyncHistoryDone, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requesterDeviceId !== "") {
+      writer.uint32(10).string(message.requesterDeviceId);
+    }
+    if (message.chatId !== "") {
+      writer.uint32(18).string(message.chatId);
+    }
+    if (message.totalSent !== 0) {
+      writer.uint32(24).int32(message.totalSent);
+    }
+    if (message.hasMore !== false) {
+      writer.uint32(32).bool(message.hasMore);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): SyncHistoryDone {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSyncHistoryDone();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.requesterDeviceId = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.chatId = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.totalSent = reader.int32();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.hasMore = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): SyncHistoryDone {
+    return {
+      requesterDeviceId: isSet(object.requesterDeviceId)
+        ? globalThis.String(object.requesterDeviceId)
+        : isSet(object.requester_device_id)
+        ? globalThis.String(object.requester_device_id)
+        : "",
+      chatId: isSet(object.chatId)
+        ? globalThis.String(object.chatId)
+        : isSet(object.chat_id)
+        ? globalThis.String(object.chat_id)
+        : "",
+      totalSent: isSet(object.totalSent)
+        ? globalThis.Number(object.totalSent)
+        : isSet(object.total_sent)
+        ? globalThis.Number(object.total_sent)
+        : 0,
+      hasMore: isSet(object.hasMore)
+        ? globalThis.Boolean(object.hasMore)
+        : isSet(object.has_more)
+        ? globalThis.Boolean(object.has_more)
+        : false,
+    };
+  },
+
+  toJSON(message: SyncHistoryDone): unknown {
+    const obj: any = {};
+    if (message.requesterDeviceId !== "") {
+      obj.requesterDeviceId = message.requesterDeviceId;
+    }
+    if (message.chatId !== "") {
+      obj.chatId = message.chatId;
+    }
+    if (message.totalSent !== 0) {
+      obj.totalSent = Math.round(message.totalSent);
+    }
+    if (message.hasMore !== false) {
+      obj.hasMore = message.hasMore;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<SyncHistoryDone>, I>>(base?: I): SyncHistoryDone {
+    return SyncHistoryDone.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<SyncHistoryDone>, I>>(object: I): SyncHistoryDone {
+    const message = createBaseSyncHistoryDone();
+    message.requesterDeviceId = object.requesterDeviceId ?? "";
+    message.chatId = object.chatId ?? "";
+    message.totalSent = object.totalSent ?? 0;
+    message.hasMore = object.hasMore ?? false;
     return message;
   },
 };

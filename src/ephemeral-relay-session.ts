@@ -31,6 +31,11 @@ export interface EphemeralRemoveEvent {
 
 export interface EphemeralTypingEvent {
   isTyping: boolean;
+  // public_group only — which participant this signal is about. Absent for
+  // 1:1 rooms (exactly one other party, no roster to attribute to) and
+  // absent on the synthetic "clear everything" event this session fires on
+  // disconnect/reconnect (see markActivity call sites in handleFrame below).
+  sender?: string;
 }
 
 // Builds the exact wire payload a RELAY_TEXT frame carries: encrypt the
@@ -72,11 +77,85 @@ function parsePeerLeftDeadline(payloadText: string): number | undefined {
 // gateway see isTyping in the clear.
 function parseTypingPayload(payloadText: string): EphemeralTypingEvent | null {
   try {
-    const isTyping = JSON.parse(payloadText)?.isTyping;
-    return typeof isTyping === "boolean" ? { isTyping } : null;
+    const parsed = JSON.parse(payloadText);
+    const isTyping = parsed?.isTyping;
+    if (typeof isTyping !== "boolean") return null;
+    const sender = parsed?.sender;
+    return typeof sender === "string" && sender ? { isTyping, sender } : { isTyping };
   } catch {
     return null;
   }
+}
+
+// Plaintext JSON, same reasoning as parseTypingPayload — public_group
+// presence, not message content (see RELAY_CHANNEL_JOIN/PART's proto
+// comment).
+function parseChannelPresencePayload(
+  payloadText: string
+): { sender: string; previousSender?: string } | null {
+  try {
+    const parsed = JSON.parse(payloadText);
+    const sender = parsed?.sender;
+    const previousSender = parsed?.previousSender;
+    if (typeof sender !== "string" || !sender) return null;
+    return typeof previousSender === "string" && previousSender
+      ? { sender, previousSender }
+      : { sender };
+  } catch {
+    return null;
+  }
+}
+
+// Plaintext JSON, same reasoning as parseChannelPresencePayload —
+// moderation state, not message content (see RELAY_CHANNEL_MODE's proto
+// comment).
+export interface EphemeralModerationState {
+  moderated: boolean;
+  ops: string[];
+  voiced: string[];
+}
+
+function parseModerationStatePayload(payloadText: string): EphemeralModerationState | null {
+  try {
+    const parsed = JSON.parse(payloadText);
+    if (typeof parsed?.moderated !== "boolean" || !Array.isArray(parsed?.ops) || !Array.isArray(parsed?.voiced)) {
+      return null;
+    }
+    return { moderated: parsed.moderated, ops: parsed.ops, voiced: parsed.voiced };
+  } catch {
+    return null;
+  }
+}
+
+function parseKickedPayload(payloadText: string): "kicked" | "banned" {
+  try {
+    return JSON.parse(payloadText)?.reason === "banned" ? "banned" : "kicked";
+  } catch {
+    return "kicked";
+  }
+}
+
+// Shared by callers that wire onModeChange — turns a moderation state
+// transition into the same kind of system-pill text RELAY_CHANNEL_JOIN/PART
+// already produce, instead of duplicating this diff logic in each caller.
+// `prev` is undefined on the very first snapshot (nothing to diff against
+// yet, so no pills).
+export function describeModerationChange(
+  prev: EphemeralModerationState | undefined,
+  next: EphemeralModerationState
+): string[] {
+  if (!prev) return [];
+  const texts: string[] = [];
+  if (prev.moderated !== next.moderated) {
+    texts.push(next.moderated ? "Channel is now moderated (+m)" : "Channel is no longer moderated (-m)");
+  }
+  const added = (before: string[], after: string[]) => after.filter((n) => !before.includes(n));
+  const removed = (before: string[], after: string[]) => before.filter((n) => !after.includes(n));
+  for (const name of added(prev.ops, next.ops)) texts.push(`${name} was given operator status (+o)`);
+  for (const name of removed(prev.ops, next.ops)) texts.push(`${name} lost operator status (-o)`);
+  for (const name of added(prev.voiced, next.voiced)) texts.push(`${name} was given voice (+v)`);
+  for (const name of removed(prev.voiced, next.voiced)) texts.push(`${name} lost voice (-v)`);
+  return texts;
 }
 
 // Inverse of the above — decrypts the first message bundled into an
@@ -119,6 +198,20 @@ export interface EphemeralRelaySessionOptions {
   onEdit: (event: EphemeralEditEvent) => void;
   onRemove: (event: EphemeralRemoveEvent) => void;
   onTyping: (event: EphemeralTypingEvent) => void;
+  // public_group only — fires when another participant announces itself
+  // (RELAY_CHANNEL_JOIN) or the gateway reports one disconnecting
+  // (RELAY_CHANNEL_PART). Optional so 1:1 callers (which never receive
+  // these kinds) don't need to pass anything.
+  onParticipantJoin?: (sender: string, previousSender?: string) => void;
+  onParticipantLeave?: (sender: string) => void;
+  // public_group only — fires whenever a ModerateChannel action changes
+  // the channel's moderated flag or op/voice roster (RELAY_CHANNEL_MODE).
+  onModeChange?: (state: EphemeralModerationState) => void;
+  // public_group only — fires when this connection itself was kicked or
+  // banned (RELAY_CHANNEL_KICKED), right before the gateway closes the
+  // socket. Callers should treat this like the "closed" status (see
+  // onStatusChange) but with reason-specific copy.
+  onKicked?: (reason: "kicked" | "banned") => void;
   onStatusChange: (status: EphemeralRelayStatus, meta?: EphemeralStatusMeta) => void;
   // Fires on every frame seen (sent or received) with the new "this room
   // goes stale at" deadline — separate from peerLeftDeadline (which is
@@ -174,11 +267,20 @@ export class EphemeralRelaySession {
 
     if (kind === "joined" || kind === "reclaim") {
       this.opts.onStatusChange("open");
+      // A reconnect/reclaim has no guarantee the other side's stop-typing
+      // frame (sent, if at all, while this side was disconnected) actually
+      // arrived — without this, a peer that was mid-"typing…" right before
+      // the drop stays stuck showing typing forever after reconnecting,
+      // since nothing else ever clears it. Clear-all (no sender) is safe
+      // even in public_group: whoever's still actually typing re-sends
+      // their own "true" on the next keystroke debounce.
+      this.opts.onTyping({ isTyping: false });
       return;
     }
 
     if (kind === "left") {
       this.opts.onStatusChange("peer_left", { peerLeftDeadline: parsePeerLeftDeadline(payloadText) });
+      this.opts.onTyping({ isTyping: false });
       return;
     }
 
@@ -192,6 +294,7 @@ export class EphemeralRelaySession {
     // getting its own.
     if (kind === "end" || kind === "claimed_elsewhere") {
       this.opts.onStatusChange("closed");
+      this.opts.onTyping({ isTyping: false });
       return;
     }
 
@@ -227,6 +330,44 @@ export class EphemeralRelaySession {
     if (kind === "typing") {
       const event = parseTypingPayload(payloadText);
       if (event) this.opts.onTyping(event);
+      return;
+    }
+
+    // Deliberately NOT routed through onStatusChange above — unlike "left",
+    // one participant departing a shared channel must never flip the whole
+    // channel's status to "peer_left" (that's a 1:1-only concept). See the
+    // proto comment on RELAY_CHANNEL_JOIN/RELAY_CHANNEL_PART.
+    if (kind === "channel_join") {
+      const event = parseChannelPresencePayload(payloadText);
+      if (event) this.opts.onParticipantJoin?.(event.sender, event.previousSender);
+      return;
+    }
+
+    if (kind === "channel_part") {
+      const event = parseChannelPresencePayload(payloadText);
+      if (event) {
+        this.opts.onParticipantLeave?.(event.sender);
+        // A participant who leaves mid-"typing…" has no further chance to
+        // send its own stop-typing frame — without this it lingers in
+        // everyone else's typing indicator forever.
+        this.opts.onTyping({ isTyping: false, sender: event.sender });
+      }
+      return;
+    }
+
+    if (kind === "channel_mode") {
+      const state = parseModerationStatePayload(payloadText);
+      if (state) this.opts.onModeChange?.(state);
+      return;
+    }
+
+    // Targeted at exactly this connection — the gateway closes the
+    // underlying socket right after sending this, so there is no reconnect
+    // to consider, same terminal handling as "end"/"claimed_elsewhere".
+    if (kind === "channel_kicked") {
+      this.opts.onKicked?.(parseKickedPayload(payloadText));
+      this.opts.onStatusChange("closed");
+      this.opts.onTyping({ isTyping: false });
     }
   }
 
@@ -253,28 +394,51 @@ export class EphemeralRelaySession {
     return event;
   }
 
-  sendTyping(isTyping: boolean) {
+  // public_group only — announces this participant's nickname to every
+  // other live subscriber of the channel (see RELAY_CHANNEL_JOIN's proto
+  // comment) so they can add it to their participants list without waiting
+  // for a message. Plaintext, not encrypted — presence, not content, same
+  // as sendTyping below. Callers are expected to call this once right
+  // after joining/rejoining a channel; 1:1 rooms never call this.
+  //
+  // previousSender, when passed, is this same participant's prior
+  // announced name (a mid-session nickname change, not a fresh join) —
+  // lets onParticipantJoin subscribers replace the stale entry instead of
+  // appending a duplicate, since the roster has no identity beyond the
+  // name string itself.
+  announcePresence(sender: string, previousSender?: string) {
+    this.opts.sendFrame(
+      "channel_join",
+      JSON.stringify(previousSender ? { sender, previousSender } : { sender })
+    );
+  }
+
+  // sender: public_group only — this participant's own nickname, so peers
+  // can attribute the signal to someone in a channel with more than one
+  // other party. Omitted by 1:1 callers, which have exactly one other side
+  // to attribute it to.
+  sendTyping(isTyping: boolean, sender?: string) {
     if (isTyping) {
       if (this.typingTimeout) {
         clearTimeout(this.typingTimeout);
       } else {
-        this.opts.sendFrame("typing", JSON.stringify({ isTyping: true }));
+        this.opts.sendFrame("typing", JSON.stringify(sender ? { isTyping: true, sender } : { isTyping: true }));
         this.markActivity();
       }
 
-      this.typingTimeout = setTimeout(() => this.clearTyping(), 3000);
+      this.typingTimeout = setTimeout(() => this.clearTyping(sender), 3000);
       return;
     }
 
-    this.clearTyping();
+    this.clearTyping(sender);
   }
 
-  private clearTyping() {
+  private clearTyping(sender?: string) {
     if (!this.typingTimeout) return;
 
     clearTimeout(this.typingTimeout);
     this.typingTimeout = null;
-    this.opts.sendFrame("typing", JSON.stringify({ isTyping: false }));
+    this.opts.sendFrame("typing", JSON.stringify(sender ? { isTyping: false, sender } : { isTyping: false }));
     this.markActivity();
   }
 

@@ -13,7 +13,11 @@ export type RelayMessageKind =
   | "reclaim"
   | "end"
   | "claimed_elsewhere"
-  | "typing";
+  | "typing"
+  | "channel_join"
+  | "channel_part"
+  | "channel_kicked"
+  | "channel_mode";
 
 const KIND_TO_WIRE: Record<RelayMessageKind, WireRelayMessageKind> = {
   joined: WireRelayMessageKind.RELAY_JOINED,
@@ -26,6 +30,10 @@ const KIND_TO_WIRE: Record<RelayMessageKind, WireRelayMessageKind> = {
   end: WireRelayMessageKind.RELAY_END,
   claimed_elsewhere: WireRelayMessageKind.RELAY_CLAIMED_ELSEWHERE,
   typing: WireRelayMessageKind.RELAY_TYPING,
+  channel_join: WireRelayMessageKind.RELAY_CHANNEL_JOIN,
+  channel_part: WireRelayMessageKind.RELAY_CHANNEL_PART,
+  channel_kicked: WireRelayMessageKind.RELAY_CHANNEL_KICKED,
+  channel_mode: WireRelayMessageKind.RELAY_CHANNEL_MODE,
 };
 
 const WIRE_TO_KIND: Partial<Record<WireRelayMessageKind, RelayMessageKind>> = {
@@ -39,6 +47,10 @@ const WIRE_TO_KIND: Partial<Record<WireRelayMessageKind, RelayMessageKind>> = {
   [WireRelayMessageKind.RELAY_END]: "end",
   [WireRelayMessageKind.RELAY_CLAIMED_ELSEWHERE]: "claimed_elsewhere",
   [WireRelayMessageKind.RELAY_TYPING]: "typing",
+  [WireRelayMessageKind.RELAY_CHANNEL_JOIN]: "channel_join",
+  [WireRelayMessageKind.RELAY_CHANNEL_PART]: "channel_part",
+  [WireRelayMessageKind.RELAY_CHANNEL_KICKED]: "channel_kicked",
+  [WireRelayMessageKind.RELAY_CHANNEL_MODE]: "channel_mode",
 };
 
 export function toWireKind(kind: RelayMessageKind): WireRelayMessageKind {

@@ -5,6 +5,10 @@ import {
   EvergramMessageDeleted,
   EvergramMessageEdited,
   EvergramReaction,
+  EvergramVisitorChannelModeChanged,
+  EvergramVisitorChannelParticipantJoined,
+  EvergramVisitorChannelParticipantLeft,
+  EvergramVisitorKicked,
   EvergramVisitorMessage,
   EvergramVisitorMessageDeleted,
   EvergramVisitorMessageEdited,
@@ -13,7 +17,7 @@ import {
   EvergramVisitorRoomTimedOut,
   EvergramVisitorTyping,
 } from "./core";
-import { ChatInfo, JoinRequestedEvent, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
+import { ChatInfo, JoinRequestedEvent, ModerationAction, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
 import { EphemeralEditEvent, EphemeralRemoveEvent, EphemeralTextEvent } from "./ephemeral-relay-session";
 
 export interface JoinRequestHandle extends JoinRequestedEvent {
@@ -56,6 +60,21 @@ export interface VisitorSessionHandle {
   typing(isTyping: boolean): void;
   /** Permanently ends the conversation — the visitor can't reconnect into it afterward. */
   end(): void;
+  /**
+   * public_group only — announces this bot's nickname to the channel's
+   * roster. Call once after subscribing, and again on any later rename.
+   * No-op-shaped for 1:1 rooms (the gateway simply never has anyone to
+   * broadcast it to), but there's no reason to call it there.
+   */
+  announcePresence(sender: string, previousSender?: string): void;
+  /**
+   * public_group only — kick/ban/unban/op/voice/moderated toggle. Requires
+   * this bot to currently be a channel op (always true for the widget's own
+   * owner — see subscribePublicChannel's auto-op). Throws via the response
+   * status on the wire, same as every other RPC — this does not pre-check
+   * authorization client-side.
+   */
+  moderate(action: ModerationAction, targetParticipant?: string): Promise<unknown>;
 }
 
 function buildVisitorSessionHandle(
@@ -70,6 +89,8 @@ function buildVisitorSessionHandle(
     remove: (msgId) => core.removeVisitorMessage(meta.roomToken, msgId),
     typing: (isTyping) => core.sendVisitorTyping(meta.roomToken, isTyping),
     end: () => core.endVisitorRoom(meta.roomToken),
+    announcePresence: (sender, previousSender) => core.announceChannelPresence(meta.roomToken, sender, previousSender),
+    moderate: (action, targetParticipant) => core.moderateChannel(meta.roomToken, action, targetParticipant),
   };
 }
 
@@ -93,6 +114,19 @@ type VisitorMessageDeletedHandler = (
 ) => void | Promise<void>;
 type VisitorTypingHandler = (event: EvergramVisitorTyping, handle: VisitorSessionHandle | undefined) => void | Promise<void>;
 type VisitorRoomTimedOutHandler = (event: EvergramVisitorRoomTimedOut) => void | Promise<void>;
+type VisitorChannelParticipantJoinedHandler = (
+  event: EvergramVisitorChannelParticipantJoined,
+  handle: VisitorSessionHandle | undefined
+) => void | Promise<void>;
+type VisitorChannelParticipantLeftHandler = (
+  event: EvergramVisitorChannelParticipantLeft,
+  handle: VisitorSessionHandle | undefined
+) => void | Promise<void>;
+type VisitorChannelModeChangedHandler = (
+  event: EvergramVisitorChannelModeChanged,
+  handle: VisitorSessionHandle | undefined
+) => void | Promise<void>;
+type VisitorKickedHandler = (event: EvergramVisitorKicked) => void | Promise<void>;
 type JoinRequestHandler = (req: JoinRequestHandle) => void | Promise<void>;
 type ChatRequestHandler = (req: ChatRequestHandle) => void | Promise<void>;
 type GroupInviteHandler = (req: GroupInviteHandle) => void | Promise<void>;
@@ -310,6 +344,56 @@ export class EvergramBot {
 
     this.core.on("visitorTyping", wrapped);
     return () => this.core.off("visitorTyping", wrapped);
+  }
+
+  // public_group only — fires when another participant announces itself
+  // (a fresh join) or renames mid-session. See EvergramVisitorChannelParticipantJoined.
+  onVisitorChannelParticipantJoined(handler: VisitorChannelParticipantJoinedHandler): () => void {
+    const wrapped = (event: EvergramVisitorChannelParticipantJoined) => {
+      const meta = this.core.getVisitorSession(event.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorChannelParticipantJoined", wrapped);
+    return () => this.core.off("visitorChannelParticipantJoined", wrapped);
+  }
+
+  // public_group only — fires when a channel participant disconnects.
+  onVisitorChannelParticipantLeft(handler: VisitorChannelParticipantLeftHandler): () => void {
+    const wrapped = (event: EvergramVisitorChannelParticipantLeft) => {
+      const meta = this.core.getVisitorSession(event.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorChannelParticipantLeft", wrapped);
+    return () => this.core.off("visitorChannelParticipantLeft", wrapped);
+  }
+
+  // public_group only — fires whenever a moderateChannel() action (by this
+  // bot or another op) changes the channel's moderated flag or op/voice roster.
+  onVisitorChannelModeChanged(handler: VisitorChannelModeChangedHandler): () => void {
+    const wrapped = (event: EvergramVisitorChannelModeChanged) => {
+      const meta = this.core.getVisitorSession(event.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
+      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorChannelModeChanged", wrapped);
+    return () => this.core.off("visitorChannelModeChanged", wrapped);
+  }
+
+  // public_group only — fires when this bot's own channel subscription was
+  // kicked or banned. No handle is passed: the session is already torn down
+  // by the time this fires (see core.ts's createVisitorSession onStatusChange).
+  onVisitorKicked(handler: VisitorKickedHandler): () => void {
+    const wrapped = (event: EvergramVisitorKicked) => {
+      Promise.resolve(handler(event)).catch((err) => this.core.emit("error", err));
+    };
+
+    this.core.on("visitorKicked", wrapped);
+    return () => this.core.off("visitorKicked", wrapped);
   }
 
   // Fires only in the rarer race where the widget owner had a device

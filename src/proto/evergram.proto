@@ -128,7 +128,77 @@ message ClientMessage {
     ListDevices  list_devices  = 50;
 
     DenyJoinRequest deny_join_request = 51;
+
+    SyncHistoryRequest  sync_history_request  = 52;
+    SyncHistoryFetch    sync_history_fetch    = 53;
+    SyncHistoryAccept   sync_history_accept   = 54;
+    SyncHistoryReject   sync_history_reject   = 55;
+    SyncHistoryChunk    sync_history_chunk    = 56;
+    SyncHistoryDone     sync_history_done     = 57;
+
+    UpdateWidgetConfig update_widget_config = 58;
+
+    SubscribePublicChannel subscribe_public_channel = 59;
+
+    ModerateChannel moderate_channel = 60;
   }
+}
+
+message SubscribePublicChannel {
+  string widget_id   = 1;
+  string channel_key = 2; // 64-char hex, from operator's local widgetConfig
+}
+
+message SubscribePublicChannelResponse {
+  ResponseStatus status      = 1;
+  string         room_token  = 2;
+  string         channel_key = 3;
+  // Nicknames already known for this channel's other live subscribers (see
+  // publicChannelRegistry.ts's getChannelParticipantNames) — lets the
+  // caller seed its participants list without waiting for each of them to
+  // send anything. Never includes the caller itself.
+  repeated string participants = 4;
+  // Current moderation state (see publicChannelRegistry.ts's
+  // ModerationSnapshot) — without this, a (re)joining/reconnecting client
+  // has no way to know who's op/voiced or whether the channel is
+  // moderated until the next live ModerateChannel action broadcasts one;
+  // after a reload it would otherwise silently reset to nothing/false.
+  bool            moderated = 5;
+  repeated string ops       = 6;
+  repeated string voiced    = 7;
+}
+
+// IRC-style moderation for a public_group channel (see
+// publicChannelRegistry.ts). Every action shares the same auth check (caller
+// must currently be op — see isChannelOp) and the same request/target shape,
+// so this is one combined RPC rather than a message per action.
+enum ModerationAction {
+  MODERATION_KICK           = 0;
+  MODERATION_BAN            = 1;
+  MODERATION_UNBAN          = 2;
+  MODERATION_GRANT_OP       = 3;
+  MODERATION_REVOKE_OP      = 4;
+  MODERATION_GRANT_VOICE    = 5;
+  MODERATION_REVOKE_VOICE   = 6;
+  MODERATION_SET_MODERATED  = 7;
+  MODERATION_UNSET_MODERATED = 8;
+}
+
+message ModerateChannel {
+  string            room_token        = 1;
+  ModerationAction  action            = 2;
+  // Required for KICK/BAN/UNBAN/GRANT_OP/REVOKE_OP/GRANT_VOICE/REVOKE_VOICE
+  // (resolved to a live subscriber by current nickname — see
+  // findSubscriberWsByName); ignored for SET_MODERATED/UNSET_MODERATED.
+  string            target_participant = 3;
+}
+
+message ModerateChannelResponse {
+  ResponseStatus  status     = 1;
+  string          room_token = 2;
+  bool            moderated  = 3;
+  repeated string ops        = 4;
+  repeated string voiced     = 5;
 }
 
 // Anonymous ephemeral side-chat ("magic link"): the link creator is an
@@ -203,12 +273,42 @@ enum RelayMessageKind {
   RELAY_CLAIMED_ELSEWHERE = 8;
   // Sent by either side currently holding a slot in the room, mirroring
   // TypingContent on the real per-chat Envelope (see handleTyping.ts on the
-  // gateway) — plaintext payload, JSON {isTyping: bool}, not nacl-encrypted
-  // like the content kinds above: typing liveness isn't message content,
-  // and the real chat already accepts the gateway seeing it in the clear.
-  // Relayed through the exact same opaque kind+payload path as every other
-  // frame (see relayMessage.ts) — no gateway changes needed to support it.
+  // gateway) — plaintext payload, JSON {isTyping: bool, sender?: string},
+  // not nacl-encrypted like the content kinds above: typing liveness isn't
+  // message content, and the real chat already accepts the gateway seeing
+  // it in the clear. `sender` is public_group-only (a channel has more than
+  // one other party to attribute the signal to); 1:1 rooms omit it. Relayed
+  // through the exact same opaque kind+payload path as every other frame
+  // (see relayMessage.ts) — no gateway changes needed to support it.
   RELAY_TYPING = 9;
+  // public_group-only presence, deliberately distinct from RELAY_JOINED/
+  // RELAY_LEFT: those two pair/unpair a 1:1 room's single peer and flip
+  // EphemeralRelaySession's connectionStatus (open/peer_left) — reusing
+  // them for a shared channel would wrongly flip the whole channel to
+  // "peer_left" every time any one of N participants disconnects. Sent by
+  // a visitor's client right after joining a channel; payload is plaintext
+  // JSON {sender}, like RELAY_TYPING — presence, not message content — so
+  // the gateway may read (but never modify) it to learn the connection's
+  // nickname for publicChannelRegistry.ts's participant tracking.
+  RELAY_CHANNEL_JOIN = 10;
+  // Gateway-synthesized (never sent by a client), mirroring RELAY_LEFT's
+  // "gateway announces a drop" pattern but scoped to one participant of a
+  // shared channel rather than a 1:1 room's only peer. Plaintext payload
+  // {sender}, same shape as RELAY_CHANNEL_JOIN.
+  RELAY_CHANNEL_PART = 11;
+  // Gateway-synthesized (never sent by a client), targeted at exactly the
+  // ejected connection only (not broadcast) — sent right before the
+  // gateway closes that socket in response to a ModerateChannel KICK or
+  // BAN action (see moderateChannel.ts). Plaintext payload {reason:
+  // "kicked"|"banned"}; the client treats this like RELAY_END/
+  // RELAY_CLAIMED_ELSEWHERE — final, no reconnect.
+  RELAY_CHANNEL_KICKED = 12;
+  // Gateway-synthesized (never sent by a client), broadcast to every
+  // remaining channel subscriber after any ModerateChannel action
+  // succeeds — plaintext payload is a fresh state snapshot, {moderated:
+  // bool, ops: string[], voiced: string[]} (participant names, same
+  // identity model as RELAY_CHANNEL_JOIN — presence, not content).
+  RELAY_CHANNEL_MODE = 13;
 }
 
 message RelayMessage {
@@ -231,6 +331,7 @@ message Widget {
   bool   deleted        = 4;
   int64  widget_version = 5;
   int64  created_at     = 6;
+  WidgetConfig config   = 7; // present when the owner's own ListWidgets response includes stored config (e.g. for public_group key recovery)
 }
 
 message CreateWidget {
@@ -285,6 +386,7 @@ message GetWidgetInfoResponse {
   bool            enabled            = 2;
   string          owner_identity_key = 3;
   repeated Device devices            = 4;
+  WidgetConfig    config             = 5;
 }
 
 // Anonymous visitor -> gateway: addresses a widget, never an identity
@@ -304,9 +406,38 @@ message CreateVisitorRoom {
   bytes  first_message_payload = 4;
 }
 
+message WidgetConfig {
+  string primary_color     = 1;
+  string logo_url          = 2;
+  string welcome_message   = 3;
+  string input_placeholder = 4;
+  string agent_name        = 5;
+  string position          = 6; // "bottom-right" | "bottom-left"
+  string mode              = 7; // "private_chat" | "public_group"
+  string channel_key       = 8; // 64-char hex (32 bytes); only present in public_group
+}
+
+message UpdateWidgetConfig {
+  string       widget_id = 1;
+  WidgetConfig config    = 2;
+}
+
+message UpdateWidgetConfigResponse {
+  ResponseStatus status = 1;
+}
+
 message CreateVisitorRoomResponse {
   ResponseStatus status     = 1;
   string         room_token = 2;
+  WidgetConfig   config     = 3;
+  // public_group only — see SubscribePublicChannelResponse.participants.
+  // Always empty for private_chat.
+  repeated string participants = 4;
+  // public_group only — see SubscribePublicChannelResponse.moderated/
+  // ops/voiced. Always false/empty for private_chat.
+  bool            moderated = 5;
+  repeated string ops       = 6;
+  repeated string voiced    = 7;
 }
 
 // Server -> client push, sent to every open device socket of the widget's
@@ -445,6 +576,18 @@ message RequestJoinResponse {
   repeated string moderators        = 7;
 }
 
+message DenyJoinRequest {
+  string chat_id        = 1;
+  string remote_identity = 2;
+}
+
+message DenyJoinResponse {
+  ResponseStatus status          = 1;
+  string         chat_id         = 2;
+  string         remote_identity = 3;
+  string         name            = 4; // group name, for the requester notification
+}
+
 // Server -> client push, sent to a group's admins/moderators when someone
 // requests to join via invite link.
 message JoinRequestedEvent {
@@ -454,21 +597,11 @@ message JoinRequestedEvent {
   int64  ts       = 4;
 }
 
-message DenyJoinRequest {
-  string chat_id         = 1;
-  string remote_identity = 2;
-}
-
-message DenyJoinResponse {
-  ResponseStatus status          = 1;
-  string         chat_id         = 2;
-  string         remote_identity = 3;
-  string         name            = 4;
-}
-
+// Server -> client push, sent to the requester when an admin/moderator denies
+// their join request.
 message JoinDeniedEvent {
   string chat_id = 1;
-  string name    = 2;
+  string name    = 2; // group name, for notification copy
 }
 
 message SetChatDiscoverable {
@@ -585,6 +718,19 @@ message ServerMessage {
     DenyJoinResponse deny_join_response = 60;
 
     JoinDeniedEvent join_denied_event = 61;
+
+    SyncHistoryRequest  sync_history_request  = 62;
+    SyncHistoryFetch    sync_history_fetch    = 63;
+    SyncHistoryAccept   sync_history_accept   = 64;
+    SyncHistoryReject   sync_history_reject   = 65;
+    SyncHistoryChunk    sync_history_chunk    = 66;
+    SyncHistoryDone     sync_history_done     = 67;
+
+    UpdateWidgetConfigResponse update_widget_config_response = 68;
+
+    SubscribePublicChannelResponse subscribe_public_channel_response = 69;
+
+    ModerateChannelResponse moderate_channel_response = 70;
   }
 }
 
@@ -1273,4 +1419,155 @@ message MetricsData {
 message MetricsResponse {
   ResponseStatus status  = 1;
   MetricsData    metrics = 2;
+}
+
+// ── History Synchronization ────────────────────────────────────────────────
+//
+// Protocol flow (two phases):
+//
+//   Phase 1 — Negotiation
+//     Requester → Gateway → Peer : SyncHistoryRequest  (initiate + capability exchange)
+//     Peer → Gateway → Requester : SyncHistoryAccept   (range advertisement)
+//                               or SyncHistoryReject   (peer unavailable / unsupported)
+//
+//   Phase 2 — Transfer (one SyncHistoryFetch per chat)
+//     Requester → Gateway → Peer : SyncHistoryFetch    (request specific range)
+//     Peer → Gateway → Requester : SyncHistoryChunk *  (one or more batches)
+//     Peer → Gateway → Requester : SyncHistoryDone     (end of stream for this fetch)
+//
+// The gateway only validates source/destination device identity ownership and
+// routes opaque payloads. It never inspects sync content or stores sync state.
+
+// Requester → Gateway → Peer: initiate negotiation.
+// chat_ids lists the chats the requester wants to sync; the peer responds with
+// ranges only for chats it actually has history for.
+message SyncHistoryRequest {
+  string          requester_device_id  = 1;
+  string          protocol_version     = 2;
+  repeated string chat_ids             = 3;
+  // nacl.box public key (base64) generated by the requester for this sync
+  // session. The responder seals each DBMessage.text with this key so the
+  // gateway never sees plaintext. Included in every Fetch so the responder
+  // has it stateless without storing session state from the Request.
+  string          requester_pubkey     = 4;
+  // Challenge-response authentication: the requester sends 32 random bytes
+  // (base64) and its nacl.box device pubkey (hex). The responder must seal
+  // the challenge with nacl.box(challenge, nonce, requesterDevicePub,
+  // responderDevicePriv) and return the result in SyncHistoryAccept.
+  // This proves the responder knows the private key for responder_device_pub.
+  string          challenge            = 5;
+  string          requester_device_pub = 6;
+}
+
+// Per-chat range descriptor: advertises what the responder owns.
+// count is informational (lets the requester estimate total work).
+message SyncChatRange {
+  string chat_id = 1;
+  int64  min_ts  = 2;
+  int64  max_ts  = 3;
+  int32  count   = 4;
+}
+
+// Peer → Gateway → Requester: accept + range advertisement.
+// responder_device_id lets the requester address subsequent SyncHistoryFetch
+// messages to this specific peer (stateless gateway routing).
+// symKey sealed by the responder for the requester's registered device pubkey.
+// nacl.box(symKey, nonce, requesterDevicePub, ephemeralPrivkey).
+// Allows a first-access device to decrypt chat history without key rotation.
+message SyncSymKeyForChat {
+  string chat_id          = 1;
+  string ciphertext       = 2;
+  string nonce            = 3;
+  string ephemeral_pubkey = 4;
+}
+
+message SyncHistoryAccept {
+  string                    requester_device_id  = 1;
+  string                    responder_device_id  = 2;
+  string                    protocol_version     = 3;
+  repeated SyncChatRange    ranges               = 4;
+  // Challenge response: nacl.box(challenge, nonce, requesterDevicePub,
+  // responderDevicePriv). Proves the responder knows the private key for
+  // responder_device_pub. Empty if the requester sent no challenge.
+  string                    challenge_response   = 5;
+  string                    challenge_nonce      = 6;
+  string                    responder_device_pub = 7;
+  // Per-chat symKeys sealed for the requester's registered device pubkey.
+  // Only populated when the responder has a decrypted symKey for the chat.
+  repeated SyncSymKeyForChat sealed_sym_keys     = 8;
+}
+
+// Peer → Gateway → Requester: reject (peer has no history, is busy, or
+// speaks an incompatible protocol version).
+message SyncHistoryReject {
+  string requester_device_id = 1;
+  string reason              = 2;
+}
+
+// Requester → Gateway → Peer: request a specific message range for one chat.
+// from_ts is an exclusive lower bound (0 = from the beginning).
+// to_ts is an inclusive upper bound (0 = no upper bound).
+// limit caps the total messages returned; 0 = responder uses its own default.
+// The SyncManager sets these based on local cursor state — not the protocol.
+message SyncHistoryFetch {
+  string requester_device_id = 1;
+  string target_device_id    = 2;
+  string chat_id             = 3;
+  int64  from_ts             = 4;
+  int64  to_ts               = 5;
+  int32  limit               = 6;
+  // Same requester_pubkey from SyncHistoryRequest, repeated here so the
+  // responder can seal text fields without tracking per-session state.
+  string requester_pubkey    = 7;
+}
+
+// Protocol-level history entry. Storage-agnostic: no Dexie, IndexedDB, or
+// schema details leak into this message. The receiver maps it to its own
+// persistence format.
+message SyncHistoryEntry {
+  string msg_id          = 1;
+  string chat_id         = 2;
+  string sender          = 3;
+  int64  ts              = 4;
+  string ciphertext      = 5;
+  string nonce           = 6;
+  string reply_to_msg_id = 7;
+  bool   edited          = 8;
+  int64  edited_at       = 9;
+  bool   removed         = 10;
+  int64  removed_at      = 11;
+  // DBMessage.text sealed with nacl.box(text, nonce, requesterPubkey, responderEphemeralPrivkey).
+  // sealed_text_nonce is the nacl.box nonce (distinct from the message nonce above).
+  // The responder ephemeral pubkey is carried per-chunk in SyncHistoryChunk.
+  string sealed_text       = 12;
+  string sealed_text_nonce = 13;
+  // JSON-encoded DBMessage.reactions: Record<identityKey, { emoji: string; ts: number }>
+  string reactions_json    = 14;
+}
+
+// Peer → Gateway → Requester: one batch of entries for an in-progress fetch.
+// has_more signals whether more chunks follow before SyncHistoryDone.
+// last_ts carries the ts of the final entry in this chunk — used by the
+// SyncManager to update its per-chat cursor for recovery after reconnect.
+message SyncHistoryChunk {
+  string                    requester_device_id          = 1;
+  string                    chat_id                      = 2;
+  repeated SyncHistoryEntry entries                      = 3;
+  bool                      has_more                     = 4;
+  int64                     last_ts                      = 5;
+  // Ephemeral nacl.box pubkey (base64) generated by the responder for this
+  // fetch. All SyncHistoryEntry.sealed_text values in this chunk were sealed
+  // with the corresponding secret key. One keypair per handleSyncFetch call.
+  string                    responder_ephemeral_pubkey   = 6;
+}
+
+// Peer → Gateway → Requester: signals the end of the entry stream for one
+// SyncHistoryFetch. total_sent is the count of entries sent across all chunks.
+// has_more is true when the responder hit the fetch limit and there are more
+// messages beyond last_ts — the requester should re-fetch from the cursor.
+message SyncHistoryDone {
+  string requester_device_id = 1;
+  string chat_id             = 2;
+  int32  total_sent          = 3;
+  bool   has_more            = 4;
 }

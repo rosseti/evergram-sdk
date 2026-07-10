@@ -5,12 +5,14 @@ import {
   ChatInfo,
   ClientMessage,
   Envelope,
+  ModerationAction,
   PendingChatRequest,
   PendingGroupInvite,
   Profile,
   RelayMessage as WireRelayMessage,
   ServerMessage,
   VisitorRoomRequestedEvent,
+  WidgetConfig,
 } from "./proto/evergram";
 import { Transport } from "./transport";
 import { EvergramWallet, signAuthChallenge } from "./wallet";
@@ -20,6 +22,7 @@ import {
   deriveDevicePubHex,
   encryptMessage,
   generateMsgId,
+  hexToBytes,
   openSealedSymKey,
 } from "./crypto";
 import {
@@ -34,6 +37,7 @@ import { MessageContent, parseMessageContent } from "./message-content";
 import {
   decryptTextFramePayload,
   EphemeralEditEvent,
+  EphemeralModerationState,
   EphemeralReactEvent,
   EphemeralRelaySession,
   EphemeralRelayStatus,
@@ -213,6 +217,35 @@ export interface EvergramVisitorRoomTimedOut {
   roomToken: string;
 }
 
+// public_group only — a live roster event for a subscribed channel, fired
+// via RELAY_CHANNEL_JOIN/RELAY_CHANNEL_PART. See subscribePublicChannel.
+export interface EvergramVisitorChannelParticipantJoined {
+  roomToken: string;
+  sender: string;
+  /** Set on a mid-session nickname change, not a fresh join. */
+  previousSender?: string;
+}
+
+export interface EvergramVisitorChannelParticipantLeft {
+  roomToken: string;
+  sender: string;
+}
+
+// public_group only — fires whenever a moderateChannel() action (by this
+// bot or another op) changes the channel's moderated flag or op/voice
+// roster (RELAY_CHANNEL_MODE).
+export interface EvergramVisitorChannelModeChanged extends EphemeralModerationState {
+  roomToken: string;
+}
+
+// public_group only — fires when this bot's own subscription was kicked or
+// banned from the channel (RELAY_CHANNEL_KICKED). The session is torn down
+// (see createVisitorSession's onStatusChange) right after this fires.
+export interface EvergramVisitorKicked {
+  roomToken: string;
+  reason: "kicked" | "banned";
+}
+
 // Low-level, faithful mirror of the wire protocol — see webapp/app/lib/evergram-client.ts
 // for the browser equivalent this is modeled on. EvergramBot (bot.ts) wraps
 // this with an ergonomic API; use Core directly when you need control over
@@ -227,7 +260,10 @@ export interface EvergramVisitorRoomTimedOut {
 // "visitorRoomRequested" (EvergramVisitorRoomRequested), "visitorMessage" (EvergramVisitorMessage),
 // "visitorReaction" (EvergramVisitorReaction), "visitorMessageEdited" (EvergramVisitorMessageEdited),
 // "visitorMessageDeleted" (EvergramVisitorMessageDeleted), "visitorTyping" (EvergramVisitorTyping),
-// "visitorStatusChanged" (EvergramVisitorStatusChanged), "visitorRoomTimedOut" (EvergramVisitorRoomTimedOut).
+// "visitorStatusChanged" (EvergramVisitorStatusChanged), "visitorRoomTimedOut" (EvergramVisitorRoomTimedOut),
+// "visitorChannelParticipantJoined" (EvergramVisitorChannelParticipantJoined),
+// "visitorChannelParticipantLeft" (EvergramVisitorChannelParticipantLeft),
+// "visitorChannelModeChanged" (EvergramVisitorChannelModeChanged), "visitorKicked" (EvergramVisitorKicked).
 export class EvergramCore extends EventEmitter {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
@@ -261,7 +297,18 @@ export class EvergramCore extends EventEmitter {
   // here is equivalent to how `chats`/`symKeys` already work.
   private readonly visitorSessions = new Map<
     string,
-    { session: EphemeralRelaySession; widgetId: string; visitorLabel: string; origin: string }
+    {
+      session: EphemeralRelaySession;
+      widgetId: string;
+      visitorLabel: string;
+      origin: string;
+      // public_group only — set for sessions created via subscribePublicChannel,
+      // not the 1:1 VisitorRoomRequestedEvent path. channelKeyHex is kept so
+      // resyncVisitorSessions can re-call subscribePublicChannel (not just
+      // resend "joined" — see its comment) after a reconnect.
+      isChannel?: boolean;
+      channelKeyHex?: string;
+    }
   >();
 
   private authenticated = false;
@@ -885,6 +932,50 @@ export class EvergramCore extends EventEmitter {
     return this.request(msg, "getWidgetInfoResponse");
   }
 
+  // Sets/replaces this widget's stored config (colors, welcome copy, mode,
+  // and — for public_group — the channel_key new visitors will join with).
+  async updateWidgetConfig(widgetId: string, config: WidgetConfig) {
+    const msg = ClientMessage.create({ updateWidgetConfig: { widgetId, config } });
+    return this.requestWithReauth(msg, "updateWidgetConfigResponse");
+  }
+
+  // Authenticated-only (see the gateway's subscribePublicChannel.ts): joins
+  // this bot into its own widget's public_group channel as an operator —
+  // auto-opped, same as the webapp owner's live-arrival session. channelKey
+  // is the widget's stored config.channelKey (hex); the gateway replies
+  // with the channel's ACTUAL key in effect, which this call adopts even if
+  // it differs from what was passed (see publicChannelRegistry.ts's
+  // ensureChannel comment on stale local copies). On success, wires up a
+  // VisitorSessionHandle-compatible session for the returned roomToken —
+  // sendVisitorMessage/reactToVisitorMessage/etc. all work against it
+  // exactly like a 1:1 visitor room, keyed by the same roomToken.
+  async subscribePublicChannel(widgetId: string, channelKeyHex: string) {
+    const msg = ClientMessage.create({ subscribePublicChannel: { widgetId, channelKey: channelKeyHex } });
+    const resp = await this.requestWithReauth(msg, "subscribePublicChannelResponse");
+
+    if (resp.status?.ok && resp.roomToken) {
+      const adoptedKeyHex = resp.channelKey || channelKeyHex;
+      this.createVisitorSession(resp.roomToken, hexToBytes(adoptedKeyHex), {
+        widgetId,
+        visitorLabel: "",
+        origin: "",
+        isChannel: true,
+        channelKeyHex: adoptedKeyHex,
+      });
+    }
+
+    return resp;
+  }
+
+  // IRC-style moderation for a channel this bot is subscribed to (kick,
+  // ban, unban, grant/revoke op or voice, toggle +m) — see ModerationAction.
+  // Authorization (must currently be op) is enforced gateway-side; a
+  // non-op caller gets back status.ok=false, code "FORBIDDEN".
+  async moderateChannel(roomToken: string, action: ModerationAction, targetParticipant?: string) {
+    const msg = ClientMessage.create({ moderateChannel: { roomToken, action, targetParticipant } });
+    return this.requestWithReauth(msg, "moderateChannelResponse");
+  }
+
   // sender defaults to this bot's own profile nickname, mirroring the
   // webapp owner-side UX (defaults to the agent's real nickname instead of
   // "Anonymous," still overridable per call).
@@ -906,6 +997,13 @@ export class EvergramCore extends EventEmitter {
 
   sendVisitorTyping(roomToken: string, isTyping: boolean): void {
     this.getVisitorSessionOrThrow(roomToken).session.sendTyping(isTyping);
+  }
+
+  // public_group only — announces this bot's nickname to the channel's
+  // roster (see EphemeralRelaySession.announcePresence). Call once after
+  // subscribePublicChannel resolves, and again on any later rename.
+  announceChannelPresence(roomToken: string, sender: string, previousSender?: string): void {
+    this.getVisitorSessionOrThrow(roomToken).session.announcePresence(sender, previousSender);
   }
 
   // Permanently closes the room (see ephemeralRoomRegistry.ts's endRoom on
@@ -956,20 +1054,36 @@ export class EvergramCore extends EventEmitter {
   // ephemeralRoomRegistry.ts for why a fresh "joined" safely reclaims an
   // idle joiner slot within its reconnect grace window either way.
   private resyncVisitorSessions(): void {
-    for (const roomToken of this.visitorSessions.keys()) {
+    for (const [roomToken, entry] of this.visitorSessions) {
+      if (entry.isChannel) {
+        // A channel subscription isn't a slot in ephemeralRoomRegistry —
+        // resending "joined" would hit the 1:1 joinRoom path with an
+        // unrecognized token and fail. Re-subscribing is what actually
+        // rejoins: ensureChannel on the gateway returns the same roomToken
+        // for a still-live channel, so this transparently resumes the
+        // existing conversation rather than starting a new one.
+        this.subscribePublicChannel(entry.widgetId, entry.channelKeyHex ?? "").catch((err) =>
+          this.emit("error", err)
+        );
+        continue;
+      }
       this.sendRelayMessage(roomToken, "joined", "");
     }
   }
 
   // Shared by handleVisitorRoomRequestedEvent (a room arriving live, key
-  // freshly unsealed) and registerVisitorSession (a room rehydrated from
-  // whatever a long-running bot persisted itself across a restart) — both
-  // end up with the same {roomToken, symKey, widgetId, visitorLabel,
-  // origin}, just from different sources, and need identical wiring.
+  // freshly unsealed), registerVisitorSession (a room rehydrated from
+  // whatever a long-running bot persisted itself across a restart), and
+  // subscribePublicChannel (a public_group channel this bot explicitly
+  // joined) — all end up with the same {roomToken, symKey, ...meta}, just
+  // from different sources, and need identical wiring. The four
+  // channel-only callbacks (onParticipantJoin/Leave/onModeChange/onKicked)
+  // are wired unconditionally — they simply never fire for a 1:1 room,
+  // since the gateway never sends RELAY_CHANNEL_* frames on one.
   private createVisitorSession(
     roomToken: string,
     symKey: Uint8Array,
-    meta: { widgetId: string; visitorLabel: string; origin: string }
+    meta: { widgetId: string; visitorLabel: string; origin: string; isChannel?: boolean; channelKeyHex?: string }
   ): void {
     const session = new EphemeralRelaySession({
       symKey,
@@ -979,6 +1093,11 @@ export class EvergramCore extends EventEmitter {
       onEdit: (e) => this.emit("visitorMessageEdited", { roomToken, ...e }),
       onRemove: (e) => this.emit("visitorMessageDeleted", { roomToken, ...e }),
       onTyping: (e) => this.emit("visitorTyping", { roomToken, ...e }),
+      onParticipantJoin: (sender, previousSender) =>
+        this.emit("visitorChannelParticipantJoined", { roomToken, sender, previousSender }),
+      onParticipantLeave: (sender) => this.emit("visitorChannelParticipantLeft", { roomToken, sender }),
+      onModeChange: (state) => this.emit("visitorChannelModeChanged", { roomToken, ...state }),
+      onKicked: (reason) => this.emit("visitorKicked", { roomToken, reason }),
       onStatusChange: (status, statusMeta) => {
         // Mirrors endVisitorRoom's own cleanup for the self-initiated case
         // — "closed" can also arrive remotely (the visitor ending the
