@@ -54,14 +54,12 @@ async function main() {
       return;
     }
 
-    // req.deny() always throws — the protocol has no reject RPC today (see
-    // JoinRequestHandle's doc comment in src/bot.ts). Leaving the request
-    // alone keeps it pending until a human admin decides, or it's cleared
-    // some other way. reportUser() here is a one-off demo of the RPC, not a
-    // recommended policy — flagging every non-allowlisted request would spam
-    // reports for an ordinary public chat; a real bot would gate this behind
-    // a repeat-offender count instead.
-    console.log(`[moderation-bot] ${req.identity} is not on the allowlist, leaving request pending`);
+    console.log(`[moderation-bot] ${req.identity} is not on the allowlist, denying join for chat ${req.chatId}`);
+    await req.deny();
+
+    // reportUser() here is a one-off demo of the RPC, not a recommended policy —
+    // flagging every non-allowlisted request would spam reports for an ordinary
+    // public chat; a real bot would gate this behind a repeat-offender count instead.
     await bot.core.reportUser(req.identity, "join request denied: not on allowlist");
   });
 
