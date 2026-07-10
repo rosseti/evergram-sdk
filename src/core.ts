@@ -290,6 +290,12 @@ export class EvergramCore extends EventEmitter {
   >();
   private readonly pendingChatRequests = new Map<string, PendingChatRequest>();
   private readonly pendingGroupInvites = new Map<string, PendingGroupInvite>();
+  // Dedicated signal for connect()/reconnectAndAuthenticate() to observe an
+  // auth failure during their own connection attempt, without racing the
+  // public "error" event — which is also emitted for unrelated background
+  // failures (rotation-retry exhaustion, visitor-session resync, etc.) that
+  // must not spuriously reject an in-flight connect(). See notifyConnectFailure().
+  private readonly connectFailureListeners = new Set<(err: Error) => void>();
   // Live widget-visitor relay sessions this process is currently a party
   // to, keyed by roomToken — see [[evergram-sdk-relay-duplication]]. Not a
   // separate registry file (unlike the webapp's visitor-session-registry.ts,
@@ -356,7 +362,10 @@ export class EvergramCore extends EventEmitter {
           this.resyncVisitorSessions();
           this.emit("authenticated");
         })
-        .catch((err) => this.emit("error", err));
+        .catch((err) => {
+          this.emit("error", err);
+          this.notifyConnectFailure(err);
+        });
     });
 
     this.transport.onClose(() => {
@@ -379,23 +388,42 @@ export class EvergramCore extends EventEmitter {
         cleanup();
         resolve();
       };
-      const onError = (err: Error) => {
+      const onConnectFailure = (err: Error) => {
         cleanup();
         reject(err);
       };
+      // Node's EventEmitter throws synchronously on emit("error", ...) if
+      // zero "error" listeners are registered. connectFailureListeners
+      // (above) is our own signal for connect()'s promise settlement and is
+      // NOT a real EventEmitter listener, so it doesn't make emit("error")
+      // safe on its own. Register a real no-op listener for the duration of
+      // this connect() attempt so any emit("error", ...) triggered by the
+      // auth flow (see transport.onOpen's .catch above) can't throw and
+      // crash the process. connect()'s settlement still only reacts to
+      // notifyConnectFailure, not to this listener, so unrelated background
+      // emit("error", ...) calls still can't spuriously reject connect().
+      const onErrorNoop = () => {};
       const cleanup = () => {
         this.off("authenticated", onAuthenticated);
-        this.off("error", onError);
+        this.off("error", onErrorNoop);
+        this.connectFailureListeners.delete(onConnectFailure);
       };
 
       this.once("authenticated", onAuthenticated);
-      this.once("error", onError);
+      this.on("error", onErrorNoop);
+      this.connectFailureListeners.add(onConnectFailure);
 
       this.transport.connect().catch((err) => {
         cleanup();
         reject(err);
       });
     });
+  }
+
+  // Notifies only listeners registered by an in-flight connect() call — see
+  // connectFailureListeners above. Does not affect the public "error" event.
+  private notifyConnectFailure(err: Error): void {
+    for (const cb of this.connectFailureListeners) cb(err);
   }
 
   close(): void {
@@ -485,7 +513,11 @@ export class EvergramCore extends EventEmitter {
     });
 
     const resp = await this.requestWithReauth(msg, "createChatResponse");
-    if (resp.chat) this.processChatInfo(resp.chat);
+    // handlePush() already calls processChatInfo() for the same chat when
+    // the push arrives, synchronously before this await resolves — calling
+    // it again here double-processes it and, since symKeys is already
+    // populated by then, makes processChatInfo()'s isRotation check
+    // wrongly fire a spurious chatKeyRotated event. See rotateChatVersion().
     return resp;
   }
 
@@ -499,7 +531,9 @@ export class EvergramCore extends EventEmitter {
 
     const resp = await this.requestWithReauth(msg, "acceptChatRequestResponse");
     this.pendingChatRequests.delete(fromIdentity);
-    if (resp.chat) this.processChatInfo(resp.chat);
+    // handlePush() already applies resp.chat via processChatInfo() before
+    // this await resolves — see createChat() above for why calling it again
+    // here would spuriously fire chatKeyRotated.
     return resp;
   }
 
