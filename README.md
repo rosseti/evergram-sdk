@@ -60,8 +60,8 @@ Run the fuller version of this with persistence: `npm run example:echo-bot`.
 | `examples/moderation-bot` | Group management — auto-approving join requests by rule. |
 | `examples/webhook-bridge` | Bridging Evergram messages to an external HTTP endpoint. |
 | `examples/paywall-bot` | Monetization — gating a managed group behind a one-time payment_request/payment_receipt exchange. |
-| `examples/visitor-bot` | Widget-visitor chat — echoes back anonymous visitor messages on an existing widget, and persists active rooms to disk so a restart can reclaim them (see `EvergramCore.registerVisitorSession`). Open the printed `/widget/{id}` URL in a browser to act as the visitor. |
-| `examples/channel-bot` | Widget `public_group` channel — joins as an operator via `subscribePublicChannel`, echoes channel messages, and demonstrates moderation (`/kick`, `/ban`, `/op`, `/voice`, `/mod`, ...). Set `EVERGRAM_WIDGET_ID` to target a specific widget (falls back to the first one this identity owns). |
+| `examples/widget-visitor-bot` | Widget-visitor chat — echoes back anonymous visitor messages on an existing widget, and persists active rooms to disk so a restart can reclaim them (see `EvergramCore.registerVisitorSession`). Open the printed `/widget/{id}` URL in a browser to act as the visitor. |
+| `examples/widget-channel-bot` | Widget `public_group` channel — joins as an operator via `subscribePublicChannel`, echoes channel messages, and demonstrates moderation (`/kick`, `/ban`, `/op`, `/voice`, `/mod`, ...). Set `EVERGRAM_WIDGET_ID` to target a specific widget (falls back to the first one this identity owns). |
 
 Run with `npm run example:<name>`. Each example persists its generated
 wallet/device to `identity.json` next to it on first run (gitignored) so
@@ -298,7 +298,7 @@ SDK side, the owner/bot manages widgets and the resulting conversations:
   `{roomToken, symKey, widgetId, visitorLabel, origin}` yourself (from the
   `visitorRoomRequested` event) and call `core.registerVisitorSession(...)`
   with it *before* `connect()`/`start()` on the next run — see
-  `examples/visitor-bot` for the full pattern, including cleanup on
+  `examples/widget-visitor-bot` for the full pattern, including cleanup on
   `visitorStatusChanged` reporting `"closed"`.
 - `onVisitorRoomTimedOut` fires in the rarer race where an owner device was
   online when the room was created but disconnected before actually joining

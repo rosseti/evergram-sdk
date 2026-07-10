@@ -17,8 +17,8 @@
     "example:moderation-bot": "tsx examples/moderation-bot/index.ts",
     "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts",
     "example:paywall-bot": "tsx examples/paywall-bot/index.ts",
-    "example:visitor-bot": "tsx examples/visitor-bot/index.ts",
-    "example:channel-bot": "tsx examples/channel-bot/index.ts"
+    "example:widget-visitor-bot": "tsx examples/widget-visitor-bot/index.ts",
+    "example:widget-channel-bot": "tsx examples/widget-channel-bot/index.ts"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.10.1",
