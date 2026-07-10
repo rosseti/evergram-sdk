@@ -458,7 +458,13 @@ export class EvergramCore extends EventEmitter {
       changeProfile: { nickname: opts.nickname, avatarUrl: opts.avatarUrl, bio: opts.bio },
     });
 
-    return this.requestWithReauth(msg, "changeProfileResponse");
+    const resp = await this.requestWithReauth(msg, "changeProfileResponse");
+    // Without this, this.profile stays whatever authResponse handed back at
+    // connect time — sendVisitorMessage's `sender ?? this.profile?.nickname`
+    // default (and any other caller reading this.profile) would keep echoing
+    // the pre-rename nickname for the rest of the session.
+    if (resp.profile) this.profile = resp.profile;
+    return resp;
   }
 
   async createChat(type: "one-on-one" | "group", participants: string[], meta?: any) {
