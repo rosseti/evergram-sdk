@@ -341,6 +341,11 @@ export class EvergramCore extends EventEmitter {
       // resend "joined" — see its comment) after a reconnect.
       isChannel?: boolean;
       channelKeyHex?: string;
+      // public_group only — the sender name last passed to
+      // announceChannelPresence for this session, so resyncVisitorSessions
+      // can re-announce it after a reconnect (see its comment) instead of
+      // silently dropping this bot's own roster entry.
+      lastAnnouncedSender?: string;
     }
   >();
 
@@ -1070,7 +1075,9 @@ export class EvergramCore extends EventEmitter {
   // roster (see EphemeralRelaySession.announcePresence). Call once after
   // subscribePublicChannel resolves, and again on any later rename.
   announceChannelPresence(roomToken: string, sender: string, previousSender?: string): void {
-    this.getVisitorSessionOrThrow(roomToken).session.announcePresence(sender, previousSender);
+    const entry = this.getVisitorSessionOrThrow(roomToken);
+    entry.session.announcePresence(sender, previousSender);
+    entry.lastAnnouncedSender = sender;
   }
 
   // Permanently closes the room (see ephemeralRoomRegistry.ts's endRoom on
@@ -1129,9 +1136,26 @@ export class EvergramCore extends EventEmitter {
         // rejoins: ensureChannel on the gateway returns the same roomToken
         // for a still-live channel, so this transparently resumes the
         // existing conversation rather than starting a new one.
-        this.subscribePublicChannel(entry.widgetId, entry.channelKeyHex ?? "").catch((err) =>
-          this.emit("error", err)
-        );
+        //
+        // The gateway's channel roster ties a participant's name to the
+        // live WebSocket (publicChannelRegistry.ts's Subscriber), not to
+        // the identity — a reconnect always lands on a brand-new socket
+        // with no name recorded yet, even though subscribePublicChannel
+        // re-auto-ops it. Left alone, this bot's own roster entry silently
+        // disappears (the old socket's close broadcasts a PART for it, but
+        // nothing ever re-announces a JOIN for the new one) until the
+        // caller happens to call announceChannelPresence again by hand.
+        // Re-announcing here with the last name this session actually used
+        // — the same recovery the 1:1 branch below gets for free via
+        // resent "joined" — keeps the roster consistent across reconnects.
+        const lastAnnouncedSender = entry.lastAnnouncedSender;
+        this.subscribePublicChannel(entry.widgetId, entry.channelKeyHex ?? "")
+          .then((resp) => {
+            if (resp.status?.ok && resp.roomToken && lastAnnouncedSender) {
+              this.announceChannelPresence(resp.roomToken, lastAnnouncedSender);
+            }
+          })
+          .catch((err) => this.emit("error", err));
         continue;
       }
       this.sendRelayMessage(roomToken, "joined", "");
