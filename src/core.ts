@@ -74,6 +74,13 @@ const MAX_PENDING_SENDS = 1000;
 // same FIFO-ish tradeoff as MAX_PENDING_ENVELOPES_PER_CHAT above.
 const MAX_SEEN_ENVELOPE_KEYS = 5000;
 
+// Bounds originalContentTypeByMsgId (see decryptAndEmit's EDIT-retype guard
+// below), which records the content `type` of every SEND this process has
+// observed, keyed by msgId. Same FIFO-ish eviction as MAX_SEEN_ENVELOPE_KEYS
+// above and for the same reason: an unbounded per-process Map for the life
+// of a long-running bot otherwise.
+const MAX_ORIGINAL_CONTENT_TYPES = 5000;
+
 // Mirrors the OS family naming the webapp's platform-label.ts already uses
 // for the "{Browser} · {OS}" convention (Preferences > Devices), so the
 // device owner sees a consistent OS name regardless of which client
@@ -293,6 +300,12 @@ export class EvergramCore extends EventEmitter {
   // MAX_SEEN_ENVELOPE_KEYS above. A Map (not Set) so eviction can reuse
   // Map's insertion-order iteration to drop the oldest key in O(1).
   private readonly seenEnvelopeKeys = new Map<string, true>();
+  // Records the content `type` of every SEND this process has decrypted,
+  // keyed by msgId — lets decryptAndEmit's EDIT branch reject an incoming
+  // edit that retypes a message (e.g. text -> payment_request) instead of
+  // trusting whatever type the EDIT envelope carries. See
+  // MAX_ORIGINAL_CONTENT_TYPES above.
+  private readonly originalContentTypeByMsgId = new Map<string, MessageContent["type"]>();
   // Tracks in-flight sendMessage() calls by their own msgId so a later
   // ROTATION_REQUIRED delivery failure can rotate the chat key and resend
   // the original plaintext — see handleEnvelope's DELIVERY branch and
@@ -1618,6 +1631,13 @@ export class EvergramCore extends EventEmitter {
 
     if (env.send) {
       const text = decryptMessage(symKey, env.send.nonce, env.send.ciphertext);
+      const content = parseMessageContent(text);
+
+      this.originalContentTypeByMsgId.set(env.send.msgId, content.type);
+      if (this.originalContentTypeByMsgId.size > MAX_ORIGINAL_CONTENT_TYPES) {
+        const oldest = this.originalContentTypeByMsgId.keys().next().value;
+        if (oldest !== undefined) this.originalContentTypeByMsgId.delete(oldest);
+      }
 
       const message: EvergramChatMessage = {
         chatId: env.chatId,
@@ -1625,7 +1645,7 @@ export class EvergramCore extends EventEmitter {
         msgId: env.send.msgId,
         ts: env.ts,
         text,
-        content: parseMessageContent(text),
+        content,
       };
 
       this.emit("message", message);
@@ -1656,13 +1676,27 @@ export class EvergramCore extends EventEmitter {
         this.emit("messageDeleted", deleted);
       } else {
         const text = decryptMessage(symKey, env.edit.nonce, env.edit.ciphertext);
+        const content = parseMessageContent(text);
+
+        // Re-check the edit's content type against the original SEND's type
+        // (see boundaries.md: recipients must independently re-validate,
+        // never trust the sender). A malicious counterparty could otherwise
+        // rewrite a plain-text message into e.g. a payment_request via a
+        // crafted EDIT envelope. Known limitation: if this process never
+        // saw the original SEND (bot started later, history-synced from
+        // another device, etc.) originalType is unknown and the edit is
+        // allowed through unchanged, same as before this check existed.
+        const originalType = this.originalContentTypeByMsgId.get(env.edit.msgId);
+        if (originalType === "text" && content.type !== "text") {
+          return;
+        }
 
         const edited: EvergramMessageEdited = {
           chatId: env.chatId,
           sender: env.sender,
           msgId: env.edit.msgId,
           text,
-          content: parseMessageContent(text),
+          content,
           editedAt: env.edit.editedAt || env.ts,
         };
 
