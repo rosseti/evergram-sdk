@@ -960,11 +960,13 @@ export class EvergramCore extends EventEmitter {
   // await here in the real protocol.
   syncChats(): void {
     const knownVersions: Record<string, number> = {};
+    const knownMetaVersions: Record<string, number> = {};
     for (const [chatId, chat] of this.chats.entries()) {
       knownVersions[chatId] = chat.chatVersion ? Number(chat.chatVersion) : 0;
+      knownMetaVersions[chatId] = chat.metaVersion ? Number(chat.metaVersion) : 0;
     }
 
-    this.transport.send(ClientMessage.create({ queryChats: { knownVersions } }));
+    this.transport.send(ClientMessage.create({ queryChats: { knownVersions, knownMetaVersions } }));
   }
 
   getChat(chatId: string): ChatInfo | undefined {

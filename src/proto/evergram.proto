@@ -981,6 +981,12 @@ message ChatInfo {
   // handleGetChat/queryChats and the device-revocation design doc.
   uint64 current_key_epoch  = 10;
   uint64 required_key_epoch = 11;
+
+  // Bumped by metadata-only mutations (moderation toggle, invite link,
+  // discoverable, requestJoin, leaveChat) that don't touch sym_key_encrypted.
+  // Kept separate from chat_version so those mutations never trigger a
+  // spurious key-rotation prompt on devices that already hold the current key.
+  int64 meta_version = 12;
 }
 
 message AccountSymKeys {
@@ -1030,7 +1036,8 @@ message EncryptedKey {
 }
 
 message QueryChats {
-  map<string, uint32> known_versions = 2;
+  map<string, uint32> known_versions      = 2;
+  map<string, uint32> known_meta_versions = 3;
 }
 
 message ChatSyncResult {
@@ -1044,8 +1051,9 @@ message ChatSyncResult {
 
   Status status = 2;
 
-  ChatInfo chat           = 3;
-  uint32   server_version = 4;
+  ChatInfo chat                = 3;
+  uint32   server_version      = 4;
+  uint32   server_meta_version = 5;
 }
 
 message QueryChatsResponse {

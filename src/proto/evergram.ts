@@ -1245,6 +1245,13 @@ export interface ChatInfo {
    */
   currentKeyEpoch: number;
   requiredKeyEpoch: number;
+  /**
+   * Bumped by metadata-only mutations (moderation toggle, invite link,
+   * discoverable, requestJoin, leaveChat) that don't touch sym_key_encrypted.
+   * Kept separate from chat_version so those mutations never trigger a
+   * spurious key-rotation prompt on devices that already hold the current key.
+   */
+  metaVersion: number;
 }
 
 export interface ChatInfo_SymKeyEncryptedEntry {
@@ -1314,9 +1321,15 @@ export interface EncryptedKey {
 
 export interface QueryChats {
   knownVersions: { [key: string]: number };
+  knownMetaVersions: { [key: string]: number };
 }
 
 export interface QueryChats_KnownVersionsEntry {
+  key: string;
+  value: number;
+}
+
+export interface QueryChats_KnownMetaVersionsEntry {
   key: string;
   value: number;
 }
@@ -1326,6 +1339,7 @@ export interface ChatSyncResult {
   status: ChatSyncResult_Status;
   chat: ChatInfo | undefined;
   serverVersion: number;
+  serverMetaVersion: number;
 }
 
 export enum ChatSyncResult_Status {
@@ -14546,6 +14560,7 @@ function createBaseChatInfo(): ChatInfo {
     pendingJoinRequests: [],
     currentKeyEpoch: 0,
     requiredKeyEpoch: 0,
+    metaVersion: 0,
   };
 }
 
@@ -14583,6 +14598,9 @@ export const ChatInfo: MessageFns<ChatInfo> = {
     }
     if (message.requiredKeyEpoch !== 0) {
       writer.uint32(88).uint64(message.requiredKeyEpoch);
+    }
+    if (message.metaVersion !== 0) {
+      writer.uint32(96).int64(message.metaVersion);
     }
     return writer;
   },
@@ -14685,6 +14703,14 @@ export const ChatInfo: MessageFns<ChatInfo> = {
           message.requiredKeyEpoch = longToNumber(reader.uint64());
           continue;
         }
+        case 12: {
+          if (tag !== 96) {
+            break;
+          }
+
+          message.metaVersion = longToNumber(reader.int64());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -14753,6 +14779,11 @@ export const ChatInfo: MessageFns<ChatInfo> = {
         : isSet(object.required_key_epoch)
         ? globalThis.Number(object.required_key_epoch)
         : 0,
+      metaVersion: isSet(object.metaVersion)
+        ? globalThis.Number(object.metaVersion)
+        : isSet(object.meta_version)
+        ? globalThis.Number(object.meta_version)
+        : 0,
     };
   },
 
@@ -14797,6 +14828,9 @@ export const ChatInfo: MessageFns<ChatInfo> = {
     if (message.requiredKeyEpoch !== 0) {
       obj.requiredKeyEpoch = Math.round(message.requiredKeyEpoch);
     }
+    if (message.metaVersion !== 0) {
+      obj.metaVersion = Math.round(message.metaVersion);
+    }
     return obj;
   },
 
@@ -14822,6 +14856,7 @@ export const ChatInfo: MessageFns<ChatInfo> = {
     message.pendingJoinRequests = object.pendingJoinRequests?.map((e) => e) || [];
     message.currentKeyEpoch = object.currentKeyEpoch ?? 0;
     message.requiredKeyEpoch = object.requiredKeyEpoch ?? 0;
+    message.metaVersion = object.metaVersion ?? 0;
     return message;
   },
 };
@@ -15755,13 +15790,16 @@ export const EncryptedKey: MessageFns<EncryptedKey> = {
 };
 
 function createBaseQueryChats(): QueryChats {
-  return { knownVersions: {} };
+  return { knownVersions: {}, knownMetaVersions: {} };
 }
 
 export const QueryChats: MessageFns<QueryChats> = {
   encode(message: QueryChats, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     globalThis.Object.entries(message.knownVersions).forEach(([key, value]: [string, number]) => {
       QueryChats_KnownVersionsEntry.encode({ key: key as any, value }, writer.uint32(18).fork()).join();
+    });
+    globalThis.Object.entries(message.knownMetaVersions).forEach(([key, value]: [string, number]) => {
+      QueryChats_KnownMetaVersionsEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
     });
     return writer;
   },
@@ -15781,6 +15819,17 @@ export const QueryChats: MessageFns<QueryChats> = {
           const entry2 = QueryChats_KnownVersionsEntry.decode(reader, reader.uint32());
           if (entry2.value !== undefined) {
             message.knownVersions[entry2.key] = entry2.value;
+          }
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          const entry3 = QueryChats_KnownMetaVersionsEntry.decode(reader, reader.uint32());
+          if (entry3.value !== undefined) {
+            message.knownMetaVersions[entry3.key] = entry3.value;
           }
           continue;
         }
@@ -15812,6 +15861,23 @@ export const QueryChats: MessageFns<QueryChats> = {
           {},
         )
         : {},
+      knownMetaVersions: isObject(object.knownMetaVersions)
+        ? (globalThis.Object.entries(object.knownMetaVersions) as [string, any][]).reduce(
+          (acc: { [key: string]: number }, [key, value]: [string, any]) => {
+            acc[key] = globalThis.Number(value);
+            return acc;
+          },
+          {},
+        )
+        : isObject(object.known_meta_versions)
+        ? (globalThis.Object.entries(object.known_meta_versions) as [string, any][]).reduce(
+          (acc: { [key: string]: number }, [key, value]: [string, any]) => {
+            acc[key] = globalThis.Number(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
     };
   },
 
@@ -15823,6 +15889,15 @@ export const QueryChats: MessageFns<QueryChats> = {
         obj.knownVersions = {};
         entries.forEach(([k, v]) => {
           obj.knownVersions[k] = Math.round(v);
+        });
+      }
+    }
+    if (message.knownMetaVersions) {
+      const entries = globalThis.Object.entries(message.knownMetaVersions) as [string, number][];
+      if (entries.length > 0) {
+        obj.knownMetaVersions = {};
+        entries.forEach(([k, v]) => {
+          obj.knownMetaVersions[k] = Math.round(v);
         });
       }
     }
@@ -15843,6 +15918,13 @@ export const QueryChats: MessageFns<QueryChats> = {
       },
       {},
     );
+    message.knownMetaVersions = (globalThis.Object.entries(object.knownMetaVersions ?? {}) as [string, number][])
+      .reduce((acc: { [key: string]: number }, [key, value]: [string, number]) => {
+        if (value !== undefined) {
+          acc[key] = globalThis.Number(value);
+        }
+        return acc;
+      }, {});
     return message;
   },
 };
@@ -15925,8 +16007,88 @@ export const QueryChats_KnownVersionsEntry: MessageFns<QueryChats_KnownVersionsE
   },
 };
 
+function createBaseQueryChats_KnownMetaVersionsEntry(): QueryChats_KnownMetaVersionsEntry {
+  return { key: "", value: 0 };
+}
+
+export const QueryChats_KnownMetaVersionsEntry: MessageFns<QueryChats_KnownMetaVersionsEntry> = {
+  encode(message: QueryChats_KnownMetaVersionsEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== 0) {
+      writer.uint32(16).uint32(message.value);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): QueryChats_KnownMetaVersionsEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseQueryChats_KnownMetaVersionsEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.value = reader.uint32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): QueryChats_KnownMetaVersionsEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? globalThis.Number(object.value) : 0,
+    };
+  },
+
+  toJSON(message: QueryChats_KnownMetaVersionsEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== 0) {
+      obj.value = Math.round(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<QueryChats_KnownMetaVersionsEntry>, I>>(
+    base?: I,
+  ): QueryChats_KnownMetaVersionsEntry {
+    return QueryChats_KnownMetaVersionsEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<QueryChats_KnownMetaVersionsEntry>, I>>(
+    object: I,
+  ): QueryChats_KnownMetaVersionsEntry {
+    const message = createBaseQueryChats_KnownMetaVersionsEntry();
+    message.key = object.key ?? "";
+    message.value = object.value ?? 0;
+    return message;
+  },
+};
+
 function createBaseChatSyncResult(): ChatSyncResult {
-  return { chatId: "", status: 0, chat: undefined, serverVersion: 0 };
+  return { chatId: "", status: 0, chat: undefined, serverVersion: 0, serverMetaVersion: 0 };
 }
 
 export const ChatSyncResult: MessageFns<ChatSyncResult> = {
@@ -15942,6 +16104,9 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
     }
     if (message.serverVersion !== 0) {
       writer.uint32(32).uint32(message.serverVersion);
+    }
+    if (message.serverMetaVersion !== 0) {
+      writer.uint32(40).uint32(message.serverMetaVersion);
     }
     return writer;
   },
@@ -15985,6 +16150,14 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
           message.serverVersion = reader.uint32();
           continue;
         }
+        case 5: {
+          if (tag !== 40) {
+            break;
+          }
+
+          message.serverMetaVersion = reader.uint32();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -16008,6 +16181,11 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
         : isSet(object.server_version)
         ? globalThis.Number(object.server_version)
         : 0,
+      serverMetaVersion: isSet(object.serverMetaVersion)
+        ? globalThis.Number(object.serverMetaVersion)
+        : isSet(object.server_meta_version)
+        ? globalThis.Number(object.server_meta_version)
+        : 0,
     };
   },
 
@@ -16025,6 +16203,9 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
     if (message.serverVersion !== 0) {
       obj.serverVersion = Math.round(message.serverVersion);
     }
+    if (message.serverMetaVersion !== 0) {
+      obj.serverMetaVersion = Math.round(message.serverMetaVersion);
+    }
     return obj;
   },
 
@@ -16037,6 +16218,7 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
     message.status = object.status ?? 0;
     message.chat = (object.chat !== undefined && object.chat !== null) ? ChatInfo.fromPartial(object.chat) : undefined;
     message.serverVersion = object.serverVersion ?? 0;
+    message.serverMetaVersion = object.serverMetaVersion ?? 0;
     return message;
   },
 };
