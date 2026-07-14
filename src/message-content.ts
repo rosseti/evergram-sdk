@@ -43,11 +43,26 @@ export type PaymentReceiptContent = {
   fromIdentityKey: string;
 };
 
+export type PaymentSentContent = {
+  type: "payment_sent";
+  id: string; // crypto.randomUUID()
+  txHash: string;
+  amount: string;
+  currency: string; // ticker
+  currencyId: string; // id from currencies.ts
+  note?: string;
+  from: string; // sender's ledger address
+  fromIdentityKey: string;
+  to: string; // recipient's ledger address
+  toIdentityKey: string;
+};
+
 export type MessageContent =
   | TextContent
   | AudioContent
   | PaymentRequestContent
-  | PaymentReceiptContent;
+  | PaymentReceiptContent
+  | PaymentSentContent;
 
 /**
  * Parse a decrypted message plaintext into a typed MessageContent.
@@ -98,6 +113,22 @@ export function parseMessageContent(text: string | undefined | null): MessageCon
         fromIdentityKey: obj.fromIdentityKey,
       };
     }
+
+    if (obj.type === "payment_sent") {
+      return {
+        type: "payment_sent",
+        id: obj.id,
+        txHash: obj.txHash,
+        amount: obj.amount,
+        currency: obj.currency,
+        currencyId: obj.currencyId || "XAH",
+        note: obj.note,
+        from: obj.from,
+        fromIdentityKey: obj.fromIdentityKey,
+        to: obj.to,
+        toIdentityKey: obj.toIdentityKey,
+      };
+    }
   } catch {
     // malformed JSON — treat as plain text
   }
@@ -116,6 +147,8 @@ export function formatMessagePreview(content: MessageContent): string {
       return `💰 Payment Request: ${content.amount} ${content.currency}${note}`;
     }
     case "payment_receipt":
+      return `✅ Payment sent: ${content.amount} ${content.currency}`;
+    case "payment_sent":
       return `✅ Payment sent: ${content.amount} ${content.currency}`;
     case "text":
       return content.text;
