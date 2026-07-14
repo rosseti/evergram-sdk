@@ -1399,6 +1399,7 @@ export interface Error {
   type: string;
   code: string;
   message: string;
+  roomToken: string;
 }
 
 export interface PingPong {
@@ -1800,12 +1801,34 @@ export interface MetricsInvites {
   pending: number;
 }
 
+export interface MetricsDiscovery {
+  total: number;
+  byCategory: { [key: string]: number };
+}
+
+export interface MetricsDiscovery_ByCategoryEntry {
+  key: string;
+  value: number;
+}
+
+export interface MetricsWidgets {
+  total: number;
+  byMode: { [key: string]: number };
+}
+
+export interface MetricsWidgets_ByModeEntry {
+  key: string;
+  value: number;
+}
+
 export interface MetricsData {
   wallets: MetricsWallets | undefined;
   devices: MetricsDevices | undefined;
   chats: MetricsChats | undefined;
   access: MetricsAccess | undefined;
   invites: MetricsInvites | undefined;
+  discovery: MetricsDiscovery | undefined;
+  widgets: MetricsWidgets | undefined;
 }
 
 export interface MetricsResponse {
@@ -16452,7 +16475,7 @@ export const ResponseStatus: MessageFns<ResponseStatus> = {
 };
 
 function createBaseError(): Error {
-  return { type: "", code: "", message: "" };
+  return { type: "", code: "", message: "", roomToken: "" };
 }
 
 export const Error: MessageFns<Error> = {
@@ -16465,6 +16488,9 @@ export const Error: MessageFns<Error> = {
     }
     if (message.message !== "") {
       writer.uint32(26).string(message.message);
+    }
+    if (message.roomToken !== "") {
+      writer.uint32(34).string(message.roomToken);
     }
     return writer;
   },
@@ -16500,6 +16526,14 @@ export const Error: MessageFns<Error> = {
           message.message = reader.string();
           continue;
         }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.roomToken = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -16514,6 +16548,11 @@ export const Error: MessageFns<Error> = {
       type: isSet(object.type) ? globalThis.String(object.type) : "",
       code: isSet(object.code) ? globalThis.String(object.code) : "",
       message: isSet(object.message) ? globalThis.String(object.message) : "",
+      roomToken: isSet(object.roomToken)
+        ? globalThis.String(object.roomToken)
+        : isSet(object.room_token)
+        ? globalThis.String(object.room_token)
+        : "",
     };
   },
 
@@ -16528,6 +16567,9 @@ export const Error: MessageFns<Error> = {
     if (message.message !== "") {
       obj.message = message.message;
     }
+    if (message.roomToken !== "") {
+      obj.roomToken = message.roomToken;
+    }
     return obj;
   },
 
@@ -16539,6 +16581,7 @@ export const Error: MessageFns<Error> = {
     message.type = object.type ?? "";
     message.code = object.code ?? "";
     message.message = object.message ?? "";
+    message.roomToken = object.roomToken ?? "";
     return message;
   },
 };
@@ -21879,8 +21922,374 @@ export const MetricsInvites: MessageFns<MetricsInvites> = {
   },
 };
 
+function createBaseMetricsDiscovery(): MetricsDiscovery {
+  return { total: 0, byCategory: {} };
+}
+
+export const MetricsDiscovery: MessageFns<MetricsDiscovery> = {
+  encode(message: MetricsDiscovery, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.total !== 0) {
+      writer.uint32(8).int32(message.total);
+    }
+    globalThis.Object.entries(message.byCategory).forEach(([key, value]: [string, number]) => {
+      MetricsDiscovery_ByCategoryEntry.encode({ key: key as any, value }, writer.uint32(18).fork()).join();
+    });
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MetricsDiscovery {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMetricsDiscovery();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.total = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          const entry2 = MetricsDiscovery_ByCategoryEntry.decode(reader, reader.uint32());
+          if (entry2.value !== undefined) {
+            message.byCategory[entry2.key] = entry2.value;
+          }
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MetricsDiscovery {
+    return {
+      total: isSet(object.total) ? globalThis.Number(object.total) : 0,
+      byCategory: isObject(object.byCategory)
+        ? (globalThis.Object.entries(object.byCategory) as [string, any][]).reduce(
+          (acc: { [key: string]: number }, [key, value]: [string, any]) => {
+            acc[key] = globalThis.Number(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
+    };
+  },
+
+  toJSON(message: MetricsDiscovery): unknown {
+    const obj: any = {};
+    if (message.total !== 0) {
+      obj.total = Math.round(message.total);
+    }
+    if (message.byCategory) {
+      const entries = globalThis.Object.entries(message.byCategory) as [string, number][];
+      if (entries.length > 0) {
+        obj.byCategory = {};
+        entries.forEach(([k, v]) => {
+          obj.byCategory[k] = Math.round(v);
+        });
+      }
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MetricsDiscovery>, I>>(base?: I): MetricsDiscovery {
+    return MetricsDiscovery.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MetricsDiscovery>, I>>(object: I): MetricsDiscovery {
+    const message = createBaseMetricsDiscovery();
+    message.total = object.total ?? 0;
+    message.byCategory = (globalThis.Object.entries(object.byCategory ?? {}) as [string, number][]).reduce(
+      (acc: { [key: string]: number }, [key, value]: [string, number]) => {
+        if (value !== undefined) {
+          acc[key] = globalThis.Number(value);
+        }
+        return acc;
+      },
+      {},
+    );
+    return message;
+  },
+};
+
+function createBaseMetricsDiscovery_ByCategoryEntry(): MetricsDiscovery_ByCategoryEntry {
+  return { key: "", value: 0 };
+}
+
+export const MetricsDiscovery_ByCategoryEntry: MessageFns<MetricsDiscovery_ByCategoryEntry> = {
+  encode(message: MetricsDiscovery_ByCategoryEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== 0) {
+      writer.uint32(16).int32(message.value);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MetricsDiscovery_ByCategoryEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMetricsDiscovery_ByCategoryEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.value = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MetricsDiscovery_ByCategoryEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? globalThis.Number(object.value) : 0,
+    };
+  },
+
+  toJSON(message: MetricsDiscovery_ByCategoryEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== 0) {
+      obj.value = Math.round(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MetricsDiscovery_ByCategoryEntry>, I>>(
+    base?: I,
+  ): MetricsDiscovery_ByCategoryEntry {
+    return MetricsDiscovery_ByCategoryEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MetricsDiscovery_ByCategoryEntry>, I>>(
+    object: I,
+  ): MetricsDiscovery_ByCategoryEntry {
+    const message = createBaseMetricsDiscovery_ByCategoryEntry();
+    message.key = object.key ?? "";
+    message.value = object.value ?? 0;
+    return message;
+  },
+};
+
+function createBaseMetricsWidgets(): MetricsWidgets {
+  return { total: 0, byMode: {} };
+}
+
+export const MetricsWidgets: MessageFns<MetricsWidgets> = {
+  encode(message: MetricsWidgets, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.total !== 0) {
+      writer.uint32(8).int32(message.total);
+    }
+    globalThis.Object.entries(message.byMode).forEach(([key, value]: [string, number]) => {
+      MetricsWidgets_ByModeEntry.encode({ key: key as any, value }, writer.uint32(18).fork()).join();
+    });
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MetricsWidgets {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMetricsWidgets();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.total = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          const entry2 = MetricsWidgets_ByModeEntry.decode(reader, reader.uint32());
+          if (entry2.value !== undefined) {
+            message.byMode[entry2.key] = entry2.value;
+          }
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MetricsWidgets {
+    return {
+      total: isSet(object.total) ? globalThis.Number(object.total) : 0,
+      byMode: isObject(object.byMode)
+        ? (globalThis.Object.entries(object.byMode) as [string, any][]).reduce(
+          (acc: { [key: string]: number }, [key, value]: [string, any]) => {
+            acc[key] = globalThis.Number(value);
+            return acc;
+          },
+          {},
+        )
+        : {},
+    };
+  },
+
+  toJSON(message: MetricsWidgets): unknown {
+    const obj: any = {};
+    if (message.total !== 0) {
+      obj.total = Math.round(message.total);
+    }
+    if (message.byMode) {
+      const entries = globalThis.Object.entries(message.byMode) as [string, number][];
+      if (entries.length > 0) {
+        obj.byMode = {};
+        entries.forEach(([k, v]) => {
+          obj.byMode[k] = Math.round(v);
+        });
+      }
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MetricsWidgets>, I>>(base?: I): MetricsWidgets {
+    return MetricsWidgets.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MetricsWidgets>, I>>(object: I): MetricsWidgets {
+    const message = createBaseMetricsWidgets();
+    message.total = object.total ?? 0;
+    message.byMode = (globalThis.Object.entries(object.byMode ?? {}) as [string, number][]).reduce(
+      (acc: { [key: string]: number }, [key, value]: [string, number]) => {
+        if (value !== undefined) {
+          acc[key] = globalThis.Number(value);
+        }
+        return acc;
+      },
+      {},
+    );
+    return message;
+  },
+};
+
+function createBaseMetricsWidgets_ByModeEntry(): MetricsWidgets_ByModeEntry {
+  return { key: "", value: 0 };
+}
+
+export const MetricsWidgets_ByModeEntry: MessageFns<MetricsWidgets_ByModeEntry> = {
+  encode(message: MetricsWidgets_ByModeEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.key !== "") {
+      writer.uint32(10).string(message.key);
+    }
+    if (message.value !== 0) {
+      writer.uint32(16).int32(message.value);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): MetricsWidgets_ByModeEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMetricsWidgets_ByModeEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.key = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.value = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): MetricsWidgets_ByModeEntry {
+    return {
+      key: isSet(object.key) ? globalThis.String(object.key) : "",
+      value: isSet(object.value) ? globalThis.Number(object.value) : 0,
+    };
+  },
+
+  toJSON(message: MetricsWidgets_ByModeEntry): unknown {
+    const obj: any = {};
+    if (message.key !== "") {
+      obj.key = message.key;
+    }
+    if (message.value !== 0) {
+      obj.value = Math.round(message.value);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<MetricsWidgets_ByModeEntry>, I>>(base?: I): MetricsWidgets_ByModeEntry {
+    return MetricsWidgets_ByModeEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<MetricsWidgets_ByModeEntry>, I>>(object: I): MetricsWidgets_ByModeEntry {
+    const message = createBaseMetricsWidgets_ByModeEntry();
+    message.key = object.key ?? "";
+    message.value = object.value ?? 0;
+    return message;
+  },
+};
+
 function createBaseMetricsData(): MetricsData {
-  return { wallets: undefined, devices: undefined, chats: undefined, access: undefined, invites: undefined };
+  return {
+    wallets: undefined,
+    devices: undefined,
+    chats: undefined,
+    access: undefined,
+    invites: undefined,
+    discovery: undefined,
+    widgets: undefined,
+  };
 }
 
 export const MetricsData: MessageFns<MetricsData> = {
@@ -21899,6 +22308,12 @@ export const MetricsData: MessageFns<MetricsData> = {
     }
     if (message.invites !== undefined) {
       MetricsInvites.encode(message.invites, writer.uint32(42).fork()).join();
+    }
+    if (message.discovery !== undefined) {
+      MetricsDiscovery.encode(message.discovery, writer.uint32(50).fork()).join();
+    }
+    if (message.widgets !== undefined) {
+      MetricsWidgets.encode(message.widgets, writer.uint32(58).fork()).join();
     }
     return writer;
   },
@@ -21950,6 +22365,22 @@ export const MetricsData: MessageFns<MetricsData> = {
           message.invites = MetricsInvites.decode(reader, reader.uint32());
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.discovery = MetricsDiscovery.decode(reader, reader.uint32());
+          continue;
+        }
+        case 7: {
+          if (tag !== 58) {
+            break;
+          }
+
+          message.widgets = MetricsWidgets.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -21966,6 +22397,8 @@ export const MetricsData: MessageFns<MetricsData> = {
       chats: isSet(object.chats) ? MetricsChats.fromJSON(object.chats) : undefined,
       access: isSet(object.access) ? MetricsAccess.fromJSON(object.access) : undefined,
       invites: isSet(object.invites) ? MetricsInvites.fromJSON(object.invites) : undefined,
+      discovery: isSet(object.discovery) ? MetricsDiscovery.fromJSON(object.discovery) : undefined,
+      widgets: isSet(object.widgets) ? MetricsWidgets.fromJSON(object.widgets) : undefined,
     };
   },
 
@@ -21985,6 +22418,12 @@ export const MetricsData: MessageFns<MetricsData> = {
     }
     if (message.invites !== undefined) {
       obj.invites = MetricsInvites.toJSON(message.invites);
+    }
+    if (message.discovery !== undefined) {
+      obj.discovery = MetricsDiscovery.toJSON(message.discovery);
+    }
+    if (message.widgets !== undefined) {
+      obj.widgets = MetricsWidgets.toJSON(message.widgets);
     }
     return obj;
   },
@@ -22008,6 +22447,12 @@ export const MetricsData: MessageFns<MetricsData> = {
       : undefined;
     message.invites = (object.invites !== undefined && object.invites !== null)
       ? MetricsInvites.fromPartial(object.invites)
+      : undefined;
+    message.discovery = (object.discovery !== undefined && object.discovery !== null)
+      ? MetricsDiscovery.fromPartial(object.discovery)
+      : undefined;
+    message.widgets = (object.widgets !== undefined && object.widgets !== null)
+      ? MetricsWidgets.fromPartial(object.widgets)
       : undefined;
     return message;
   },

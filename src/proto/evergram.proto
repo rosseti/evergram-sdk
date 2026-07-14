@@ -1071,9 +1071,10 @@ message ResponseStatus {
 }
 
 message Error {
-  string type    = 1;
-  string code    = 2;
-  string message = 3;
+  string type       = 1;
+  string code       = 2;
+  string message    = 3;
+  string room_token = 4;
 }
 
 message PingPong {
@@ -1416,12 +1417,24 @@ message MetricsInvites {
   int32 pending  = 3;
 }
 
+message MetricsDiscovery {
+  int32               total     = 1;
+  map<string, int32>  byCategory = 2;
+}
+
+message MetricsWidgets {
+  int32               total  = 1;
+  map<string, int32>  byMode = 2;
+}
+
 message MetricsData {
-  MetricsWallets wallets = 1;
-  MetricsDevices devices = 2;
-  MetricsChats   chats   = 3;
-  MetricsAccess  access  = 4;
-  MetricsInvites invites = 5;
+  MetricsWallets    wallets   = 1;
+  MetricsDevices    devices   = 2;
+  MetricsChats      chats     = 3;
+  MetricsAccess     access    = 4;
+  MetricsInvites    invites   = 5;
+  MetricsDiscovery  discovery = 6;
+  MetricsWidgets    widgets   = 7;
 }
 
 message MetricsResponse {
