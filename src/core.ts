@@ -3,6 +3,7 @@ import os from "node:os";
 import {
   ChainFamily,
   ChatInfo,
+  ChatSyncResult_Status,
   ClientMessage,
   Envelope,
   ModerationAction,
@@ -963,7 +964,11 @@ export class EvergramCore extends EventEmitter {
     const knownMetaVersions: Record<string, number> = {};
     for (const [chatId, chat] of this.chats.entries()) {
       knownVersions[chatId] = chat.chatVersion ? Number(chat.chatVersion) : 0;
-      knownMetaVersions[chatId] = chat.metaVersion ? Number(chat.metaVersion) : 0;
+      // Matches the contract's own default (chatMeta.metaVersion || 1) — a
+      // chat with no locally-tracked metaVersion sits at the server's
+      // baseline of 1, never 0. Sending 0 would force a spurious OUTDATED
+      // result (full resync) for every such chat on every sync.
+      knownMetaVersions[chatId] = chat.metaVersion ? Number(chat.metaVersion) : 1;
     }
 
     this.transport.send(ClientMessage.create({ queryChats: { knownVersions, knownMetaVersions } }));
@@ -1426,6 +1431,14 @@ export class EvergramCore extends EventEmitter {
     if (msg.rotateChatVersionResponse?.chat) chatCandidates.push(msg.rotateChatVersionResponse.chat);
     for (const result of msg.queryChatsResponse?.results ?? []) {
       if (result.chat) chatCandidates.push(result.chat);
+      // The server no longer has this chat (removed/archived) — prune it
+      // locally so syncChats() stops re-sending its version forever, and
+      // let bot consumers react (e.g. stop scheduling sends to it).
+      if (result.status === ChatSyncResult_Status.MISSING && result.chatId) {
+        if (this.chats.delete(result.chatId)) {
+          this.emit("chatRemoved", result.chatId);
+        }
+      }
     }
     for (const chat of chatCandidates) this.processChatInfo(chat);
 
