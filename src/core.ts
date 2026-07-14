@@ -963,11 +963,15 @@ export class EvergramCore extends EventEmitter {
     const knownVersions: Record<string, number> = {};
     const knownMetaVersions: Record<string, number> = {};
     for (const [chatId, chat] of this.chats.entries()) {
-      knownVersions[chatId] = chat.chatVersion ? Number(chat.chatVersion) : 0;
-      // Matches the contract's own default (chatMeta.metaVersion || 1) — a
-      // chat with no locally-tracked metaVersion sits at the server's
-      // baseline of 1, never 0. Sending 0 would force a spurious OUTDATED
-      // result (full resync) for every such chat on every sync.
+      // Both fallbacks match the contract's own defaults (chatVersion || 1,
+      // metaVersion || 1 — see evergram-contract.js's queryChats/saveChat) so
+      // a chat with no locally-tracked version sits at the server's actual
+      // baseline of 1, never 0. In practice `this.chats` is in-memory only
+      // (never persisted across restarts) and only ever populated from real
+      // server ChatInfo payloads, so these fallbacks are structurally
+      // unreachable today — kept for defensive consistency, not because
+      // either branch currently fires.
+      knownVersions[chatId] = chat.chatVersion ? Number(chat.chatVersion) : 1;
       knownMetaVersions[chatId] = chat.metaVersion ? Number(chat.metaVersion) : 1;
     }
 
