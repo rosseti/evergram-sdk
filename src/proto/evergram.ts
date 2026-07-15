@@ -1829,6 +1829,7 @@ export interface MetricsData {
   invites: MetricsInvites | undefined;
   discovery: MetricsDiscovery | undefined;
   widgets: MetricsWidgets | undefined;
+  contractVersion: string;
 }
 
 export interface MetricsResponse {
@@ -22289,6 +22290,7 @@ function createBaseMetricsData(): MetricsData {
     invites: undefined,
     discovery: undefined,
     widgets: undefined,
+    contractVersion: "",
   };
 }
 
@@ -22314,6 +22316,9 @@ export const MetricsData: MessageFns<MetricsData> = {
     }
     if (message.widgets !== undefined) {
       MetricsWidgets.encode(message.widgets, writer.uint32(58).fork()).join();
+    }
+    if (message.contractVersion !== "") {
+      writer.uint32(66).string(message.contractVersion);
     }
     return writer;
   },
@@ -22381,6 +22386,14 @@ export const MetricsData: MessageFns<MetricsData> = {
           message.widgets = MetricsWidgets.decode(reader, reader.uint32());
           continue;
         }
+        case 8: {
+          if (tag !== 66) {
+            break;
+          }
+
+          message.contractVersion = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -22399,6 +22412,11 @@ export const MetricsData: MessageFns<MetricsData> = {
       invites: isSet(object.invites) ? MetricsInvites.fromJSON(object.invites) : undefined,
       discovery: isSet(object.discovery) ? MetricsDiscovery.fromJSON(object.discovery) : undefined,
       widgets: isSet(object.widgets) ? MetricsWidgets.fromJSON(object.widgets) : undefined,
+      contractVersion: isSet(object.contractVersion)
+        ? globalThis.String(object.contractVersion)
+        : isSet(object.contract_version)
+        ? globalThis.String(object.contract_version)
+        : "",
     };
   },
 
@@ -22424,6 +22442,9 @@ export const MetricsData: MessageFns<MetricsData> = {
     }
     if (message.widgets !== undefined) {
       obj.widgets = MetricsWidgets.toJSON(message.widgets);
+    }
+    if (message.contractVersion !== "") {
+      obj.contractVersion = message.contractVersion;
     }
     return obj;
   },
@@ -22454,6 +22475,7 @@ export const MetricsData: MessageFns<MetricsData> = {
     message.widgets = (object.widgets !== undefined && object.widgets !== null)
       ? MetricsWidgets.fromPartial(object.widgets)
       : undefined;
+    message.contractVersion = object.contractVersion ?? "";
     return message;
   },
 };

@@ -1435,6 +1435,7 @@ message MetricsData {
   MetricsInvites    invites   = 5;
   MetricsDiscovery  discovery = 6;
   MetricsWidgets    widgets   = 7;
+  string            contract_version = 8;
 }
 
 message MetricsResponse {
