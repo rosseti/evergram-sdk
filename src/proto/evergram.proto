@@ -141,6 +141,9 @@ message ClientMessage {
     SubscribePublicChannel subscribe_public_channel = 59;
 
     ModerateChannel moderate_channel = 60;
+
+    DeclineChatRequest    decline_chat_request     = 61;
+    ListBlockedIdentities list_blocked_identities   = 62;
   }
 }
 
@@ -731,6 +734,9 @@ message ServerMessage {
     SubscribePublicChannelResponse subscribe_public_channel_response = 69;
 
     ModerateChannelResponse moderate_channel_response = 70;
+
+    DeclineChatRequestResponse    decline_chat_request_response     = 71;
+    ListBlockedIdentitiesResponse list_blocked_identities_response  = 72;
   }
 }
 
@@ -1151,6 +1157,39 @@ message UnblockIdentityResponse {
 message CheckBlocked {
   string owner_identity  = 1; // whose rejectedSenders list to check
   string sender_identity = 2; // the identity being checked against it
+}
+
+// Declines this one pending chat request only — does not block the sender
+// (use BlockIdentity separately for that). Mirrors DeclineGroupInvite.
+message DeclineChatRequest {
+  string from_identity = 1;
+}
+
+message DeclineChatRequestResponse {
+  ResponseStatus status        = 1;
+  string         from_identity = 2;
+  // Set only by the gateway when relaying this response to the original
+  // requester's own devices (see declineChatRequestResponse.ts) — the
+  // contract never populates this. from_identity on that same push is the
+  // requester's own identity (matches the decliner's _sendAndWaitResponse
+  // matcher), which can't also double as "who declined" once a requester
+  // has more than one outstanding sent request.
+  string         declined_by   = 3;
+}
+
+// Lists the caller's own rejectedSenders/* entries (identities blocked via
+// BlockIdentity). Used to power the Settings > Blocked Users screen.
+message ListBlockedIdentities {
+}
+
+message BlockedIdentityEntry {
+  string target_identity = 1;
+  int64  blocked_at      = 2;
+}
+
+message ListBlockedIdentitiesResponse {
+  ResponseStatus                status  = 1;
+  repeated BlockedIdentityEntry blocked = 2;
 }
 
 // Group equivalent of AcceptChatRequest/BlockIdentity: when requireChatApproval

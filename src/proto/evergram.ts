@@ -441,6 +441,8 @@ export interface ClientMessage {
   updateWidgetConfig?: UpdateWidgetConfig | undefined;
   subscribePublicChannel?: SubscribePublicChannel | undefined;
   moderateChannel?: ModerateChannel | undefined;
+  declineChatRequest?: DeclineChatRequest | undefined;
+  listBlockedIdentities?: ListBlockedIdentities | undefined;
 }
 
 export interface SubscribePublicChannel {
@@ -961,6 +963,8 @@ export interface ServerMessage {
   updateWidgetConfigResponse?: UpdateWidgetConfigResponse | undefined;
   subscribePublicChannelResponse?: SubscribePublicChannelResponse | undefined;
   moderateChannelResponse?: ModerateChannelResponse | undefined;
+  declineChatRequestResponse?: DeclineChatRequestResponse | undefined;
+  listBlockedIdentitiesResponse?: ListBlockedIdentitiesResponse | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -1482,6 +1486,45 @@ export interface CheckBlocked {
   ownerIdentity: string;
   /** the identity being checked against it */
   senderIdentity: string;
+}
+
+/**
+ * Declines this one pending chat request only — does not block the sender
+ * (use BlockIdentity separately for that). Mirrors DeclineGroupInvite.
+ */
+export interface DeclineChatRequest {
+  fromIdentity: string;
+}
+
+export interface DeclineChatRequestResponse {
+  status: ResponseStatus | undefined;
+  fromIdentity: string;
+  /**
+   * Set only by the gateway when relaying this response to the original
+   * requester's own devices (see declineChatRequestResponse.ts) — the
+   * contract never populates this. from_identity on that same push is the
+   * requester's own identity (matches the decliner's _sendAndWaitResponse
+   * matcher), which can't also double as "who declined" once a requester
+   * has more than one outstanding sent request.
+   */
+  declinedBy: string;
+}
+
+/**
+ * Lists the caller's own rejectedSenders/* entries (identities blocked via
+ * BlockIdentity). Used to power the Settings > Blocked Users screen.
+ */
+export interface ListBlockedIdentities {
+}
+
+export interface BlockedIdentityEntry {
+  targetIdentity: string;
+  blockedAt: number;
+}
+
+export interface ListBlockedIdentitiesResponse {
+  status: ResponseStatus | undefined;
+  blocked: BlockedIdentityEntry[];
 }
 
 /**
@@ -2509,6 +2552,8 @@ function createBaseClientMessage(): ClientMessage {
     updateWidgetConfig: undefined,
     subscribePublicChannel: undefined,
     moderateChannel: undefined,
+    declineChatRequest: undefined,
+    listBlockedIdentities: undefined,
   };
 }
 
@@ -2690,6 +2735,12 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.moderateChannel !== undefined) {
       ModerateChannel.encode(message.moderateChannel, writer.uint32(482).fork()).join();
+    }
+    if (message.declineChatRequest !== undefined) {
+      DeclineChatRequest.encode(message.declineChatRequest, writer.uint32(490).fork()).join();
+    }
+    if (message.listBlockedIdentities !== undefined) {
+      ListBlockedIdentities.encode(message.listBlockedIdentities, writer.uint32(498).fork()).join();
     }
     return writer;
   },
@@ -3173,6 +3224,22 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.moderateChannel = ModerateChannel.decode(reader, reader.uint32());
           continue;
         }
+        case 61: {
+          if (tag !== 490) {
+            break;
+          }
+
+          message.declineChatRequest = DeclineChatRequest.decode(reader, reader.uint32());
+          continue;
+        }
+        case 62: {
+          if (tag !== 498) {
+            break;
+          }
+
+          message.listBlockedIdentities = ListBlockedIdentities.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3467,6 +3534,16 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.moderate_channel)
         ? ModerateChannel.fromJSON(object.moderate_channel)
         : undefined,
+      declineChatRequest: isSet(object.declineChatRequest)
+        ? DeclineChatRequest.fromJSON(object.declineChatRequest)
+        : isSet(object.decline_chat_request)
+        ? DeclineChatRequest.fromJSON(object.decline_chat_request)
+        : undefined,
+      listBlockedIdentities: isSet(object.listBlockedIdentities)
+        ? ListBlockedIdentities.fromJSON(object.listBlockedIdentities)
+        : isSet(object.list_blocked_identities)
+        ? ListBlockedIdentities.fromJSON(object.list_blocked_identities)
+        : undefined,
     };
   },
 
@@ -3648,6 +3725,12 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.moderateChannel !== undefined) {
       obj.moderateChannel = ModerateChannel.toJSON(message.moderateChannel);
+    }
+    if (message.declineChatRequest !== undefined) {
+      obj.declineChatRequest = DeclineChatRequest.toJSON(message.declineChatRequest);
+    }
+    if (message.listBlockedIdentities !== undefined) {
+      obj.listBlockedIdentities = ListBlockedIdentities.toJSON(message.listBlockedIdentities);
     }
     return obj;
   },
@@ -3832,6 +3915,13 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     message.moderateChannel = (object.moderateChannel !== undefined && object.moderateChannel !== null)
       ? ModerateChannel.fromPartial(object.moderateChannel)
       : undefined;
+    message.declineChatRequest = (object.declineChatRequest !== undefined && object.declineChatRequest !== null)
+      ? DeclineChatRequest.fromPartial(object.declineChatRequest)
+      : undefined;
+    message.listBlockedIdentities =
+      (object.listBlockedIdentities !== undefined && object.listBlockedIdentities !== null)
+        ? ListBlockedIdentities.fromPartial(object.listBlockedIdentities)
+        : undefined;
     return message;
   },
 };
@@ -9421,6 +9511,8 @@ function createBaseServerMessage(): ServerMessage {
     updateWidgetConfigResponse: undefined,
     subscribePublicChannelResponse: undefined,
     moderateChannelResponse: undefined,
+    declineChatRequestResponse: undefined,
+    listBlockedIdentitiesResponse: undefined,
   };
 }
 
@@ -9632,6 +9724,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.moderateChannelResponse !== undefined) {
       ModerateChannelResponse.encode(message.moderateChannelResponse, writer.uint32(562).fork()).join();
+    }
+    if (message.declineChatRequestResponse !== undefined) {
+      DeclineChatRequestResponse.encode(message.declineChatRequestResponse, writer.uint32(570).fork()).join();
+    }
+    if (message.listBlockedIdentitiesResponse !== undefined) {
+      ListBlockedIdentitiesResponse.encode(message.listBlockedIdentitiesResponse, writer.uint32(578).fork()).join();
     }
     return writer;
   },
@@ -10195,6 +10293,22 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.moderateChannelResponse = ModerateChannelResponse.decode(reader, reader.uint32());
           continue;
         }
+        case 71: {
+          if (tag !== 570) {
+            break;
+          }
+
+          message.declineChatRequestResponse = DeclineChatRequestResponse.decode(reader, reader.uint32());
+          continue;
+        }
+        case 72: {
+          if (tag !== 578) {
+            break;
+          }
+
+          message.listBlockedIdentitiesResponse = ListBlockedIdentitiesResponse.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -10539,6 +10653,16 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.moderate_channel_response)
         ? ModerateChannelResponse.fromJSON(object.moderate_channel_response)
         : undefined,
+      declineChatRequestResponse: isSet(object.declineChatRequestResponse)
+        ? DeclineChatRequestResponse.fromJSON(object.declineChatRequestResponse)
+        : isSet(object.decline_chat_request_response)
+        ? DeclineChatRequestResponse.fromJSON(object.decline_chat_request_response)
+        : undefined,
+      listBlockedIdentitiesResponse: isSet(object.listBlockedIdentitiesResponse)
+        ? ListBlockedIdentitiesResponse.fromJSON(object.listBlockedIdentitiesResponse)
+        : isSet(object.list_blocked_identities_response)
+        ? ListBlockedIdentitiesResponse.fromJSON(object.list_blocked_identities_response)
+        : undefined,
     };
   },
 
@@ -10754,6 +10878,12 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.moderateChannelResponse !== undefined) {
       obj.moderateChannelResponse = ModerateChannelResponse.toJSON(message.moderateChannelResponse);
+    }
+    if (message.declineChatRequestResponse !== undefined) {
+      obj.declineChatRequestResponse = DeclineChatRequestResponse.toJSON(message.declineChatRequestResponse);
+    }
+    if (message.listBlockedIdentitiesResponse !== undefined) {
+      obj.listBlockedIdentitiesResponse = ListBlockedIdentitiesResponse.toJSON(message.listBlockedIdentitiesResponse);
     }
     return obj;
   },
@@ -10997,6 +11127,14 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     message.moderateChannelResponse =
       (object.moderateChannelResponse !== undefined && object.moderateChannelResponse !== null)
         ? ModerateChannelResponse.fromPartial(object.moderateChannelResponse)
+        : undefined;
+    message.declineChatRequestResponse =
+      (object.declineChatRequestResponse !== undefined && object.declineChatRequestResponse !== null)
+        ? DeclineChatRequestResponse.fromPartial(object.declineChatRequestResponse)
+        : undefined;
+    message.listBlockedIdentitiesResponse =
+      (object.listBlockedIdentitiesResponse !== undefined && object.listBlockedIdentitiesResponse !== null)
+        ? ListBlockedIdentitiesResponse.fromPartial(object.listBlockedIdentitiesResponse)
         : undefined;
     return message;
   },
@@ -17655,6 +17793,381 @@ export const CheckBlocked: MessageFns<CheckBlocked> = {
     const message = createBaseCheckBlocked();
     message.ownerIdentity = object.ownerIdentity ?? "";
     message.senderIdentity = object.senderIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseDeclineChatRequest(): DeclineChatRequest {
+  return { fromIdentity: "" };
+}
+
+export const DeclineChatRequest: MessageFns<DeclineChatRequest> = {
+  encode(message: DeclineChatRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.fromIdentity !== "") {
+      writer.uint32(10).string(message.fromIdentity);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeclineChatRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeclineChatRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.fromIdentity = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeclineChatRequest {
+    return {
+      fromIdentity: isSet(object.fromIdentity)
+        ? globalThis.String(object.fromIdentity)
+        : isSet(object.from_identity)
+        ? globalThis.String(object.from_identity)
+        : "",
+    };
+  },
+
+  toJSON(message: DeclineChatRequest): unknown {
+    const obj: any = {};
+    if (message.fromIdentity !== "") {
+      obj.fromIdentity = message.fromIdentity;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeclineChatRequest>, I>>(base?: I): DeclineChatRequest {
+    return DeclineChatRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeclineChatRequest>, I>>(object: I): DeclineChatRequest {
+    const message = createBaseDeclineChatRequest();
+    message.fromIdentity = object.fromIdentity ?? "";
+    return message;
+  },
+};
+
+function createBaseDeclineChatRequestResponse(): DeclineChatRequestResponse {
+  return { status: undefined, fromIdentity: "", declinedBy: "" };
+}
+
+export const DeclineChatRequestResponse: MessageFns<DeclineChatRequestResponse> = {
+  encode(message: DeclineChatRequestResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.fromIdentity !== "") {
+      writer.uint32(18).string(message.fromIdentity);
+    }
+    if (message.declinedBy !== "") {
+      writer.uint32(26).string(message.declinedBy);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): DeclineChatRequestResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseDeclineChatRequestResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.fromIdentity = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.declinedBy = reader.string();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): DeclineChatRequestResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      fromIdentity: isSet(object.fromIdentity)
+        ? globalThis.String(object.fromIdentity)
+        : isSet(object.from_identity)
+        ? globalThis.String(object.from_identity)
+        : "",
+      declinedBy: isSet(object.declinedBy)
+        ? globalThis.String(object.declinedBy)
+        : isSet(object.declined_by)
+        ? globalThis.String(object.declined_by)
+        : "",
+    };
+  },
+
+  toJSON(message: DeclineChatRequestResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.fromIdentity !== "") {
+      obj.fromIdentity = message.fromIdentity;
+    }
+    if (message.declinedBy !== "") {
+      obj.declinedBy = message.declinedBy;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<DeclineChatRequestResponse>, I>>(base?: I): DeclineChatRequestResponse {
+    return DeclineChatRequestResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<DeclineChatRequestResponse>, I>>(object: I): DeclineChatRequestResponse {
+    const message = createBaseDeclineChatRequestResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.fromIdentity = object.fromIdentity ?? "";
+    message.declinedBy = object.declinedBy ?? "";
+    return message;
+  },
+};
+
+function createBaseListBlockedIdentities(): ListBlockedIdentities {
+  return {};
+}
+
+export const ListBlockedIdentities: MessageFns<ListBlockedIdentities> = {
+  encode(_: ListBlockedIdentities, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListBlockedIdentities {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListBlockedIdentities();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): ListBlockedIdentities {
+    return {};
+  },
+
+  toJSON(_: ListBlockedIdentities): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListBlockedIdentities>, I>>(base?: I): ListBlockedIdentities {
+    return ListBlockedIdentities.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListBlockedIdentities>, I>>(_: I): ListBlockedIdentities {
+    const message = createBaseListBlockedIdentities();
+    return message;
+  },
+};
+
+function createBaseBlockedIdentityEntry(): BlockedIdentityEntry {
+  return { targetIdentity: "", blockedAt: 0 };
+}
+
+export const BlockedIdentityEntry: MessageFns<BlockedIdentityEntry> = {
+  encode(message: BlockedIdentityEntry, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.targetIdentity !== "") {
+      writer.uint32(10).string(message.targetIdentity);
+    }
+    if (message.blockedAt !== 0) {
+      writer.uint32(16).int64(message.blockedAt);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): BlockedIdentityEntry {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseBlockedIdentityEntry();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.targetIdentity = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.blockedAt = longToNumber(reader.int64());
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): BlockedIdentityEntry {
+    return {
+      targetIdentity: isSet(object.targetIdentity)
+        ? globalThis.String(object.targetIdentity)
+        : isSet(object.target_identity)
+        ? globalThis.String(object.target_identity)
+        : "",
+      blockedAt: isSet(object.blockedAt)
+        ? globalThis.Number(object.blockedAt)
+        : isSet(object.blocked_at)
+        ? globalThis.Number(object.blocked_at)
+        : 0,
+    };
+  },
+
+  toJSON(message: BlockedIdentityEntry): unknown {
+    const obj: any = {};
+    if (message.targetIdentity !== "") {
+      obj.targetIdentity = message.targetIdentity;
+    }
+    if (message.blockedAt !== 0) {
+      obj.blockedAt = Math.round(message.blockedAt);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<BlockedIdentityEntry>, I>>(base?: I): BlockedIdentityEntry {
+    return BlockedIdentityEntry.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<BlockedIdentityEntry>, I>>(object: I): BlockedIdentityEntry {
+    const message = createBaseBlockedIdentityEntry();
+    message.targetIdentity = object.targetIdentity ?? "";
+    message.blockedAt = object.blockedAt ?? 0;
+    return message;
+  },
+};
+
+function createBaseListBlockedIdentitiesResponse(): ListBlockedIdentitiesResponse {
+  return { status: undefined, blocked: [] };
+}
+
+export const ListBlockedIdentitiesResponse: MessageFns<ListBlockedIdentitiesResponse> = {
+  encode(message: ListBlockedIdentitiesResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    for (const v of message.blocked) {
+      BlockedIdentityEntry.encode(v!, writer.uint32(18).fork()).join();
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): ListBlockedIdentitiesResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseListBlockedIdentitiesResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.blocked.push(BlockedIdentityEntry.decode(reader, reader.uint32()));
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): ListBlockedIdentitiesResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      blocked: globalThis.Array.isArray(object?.blocked)
+        ? object.blocked.map((e: any) => BlockedIdentityEntry.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: ListBlockedIdentitiesResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.blocked?.length) {
+      obj.blocked = message.blocked.map((e) => BlockedIdentityEntry.toJSON(e));
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<ListBlockedIdentitiesResponse>, I>>(base?: I): ListBlockedIdentitiesResponse {
+    return ListBlockedIdentitiesResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<ListBlockedIdentitiesResponse>, I>>(
+    object: I,
+  ): ListBlockedIdentitiesResponse {
+    const message = createBaseListBlockedIdentitiesResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.blocked = object.blocked?.map((e) => BlockedIdentityEntry.fromPartial(e)) || [];
     return message;
   },
 };
