@@ -1,6 +1,6 @@
 # Evergram SDK
 
-[![CI](https://github.com/rosseti/evergram-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/rosseti/evergram-sdk/actions/workflows/ci.yml)
+[![CI](https://github.com/rosseti/evergram-sdk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rosseti/evergram-sdk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Build bots for Evergram — decentralized, end-to-end encrypted messaging —
