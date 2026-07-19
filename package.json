@@ -28,7 +28,7 @@
     "xrpl": "^5.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20",
+    "@types/node": "^26",
     "@types/ws": "^8.18.1",
     "ts-proto": "^2.12.0",
     "tsx": "^4.20.6",
