@@ -1,4 +1,3 @@
-import { EventEmitter } from "node:events";
 import os from "node:os";
 import {
   ChainFamily,
@@ -6,16 +5,21 @@ import {
   ChatSyncResult_Status,
   ClientMessage,
   Envelope,
+  JoinDeniedEvent,
+  JoinRequestedEvent,
   ModerationAction,
   PendingChatRequest,
   PendingGroupInvite,
   Profile,
   RelayMessage as WireRelayMessage,
+  ReputationUpdated,
+  ResponseStatus,
   ServerMessage,
   VisitorRoomRequestedEvent,
   WidgetConfig,
 } from "./proto/evergram";
 import { Transport } from "./transport";
+import { TypedEventEmitter } from "./typed-event-emitter";
 import { EvergramWallet, signAuthChallenge } from "./wallet";
 import { identityKey, parseIdentityKey } from "./identity";
 import {
@@ -134,6 +138,12 @@ export interface EvergramCoreOptions {
   maxMessageSize?: number;
   /** Per-request timeout in ms. Default 30000. */
   requestTimeoutMs?: number;
+  /**
+   * Internal — lets tests inject a fake Transport instead of mocking the
+   * whole module. Not needed for normal bot usage; omit it and EvergramCore
+   * builds its own Transport(opts.url).
+   */
+  transport?: Transport;
 }
 
 interface PendingRequest {
@@ -264,25 +274,49 @@ export interface EvergramVisitorKicked {
   reason: "kicked" | "banned";
 }
 
+// Payload types for every event EvergramCore emits — see TypedEventEmitter.
+// Replaces what used to be a prose comment listing event name -> payload;
+// now `core.on("mesage", ...)` (typo) or `core.emit("connected", 123)`
+// (wrong payload) are compile errors instead of silent no-ops.
+export interface EvergramCoreEvents {
+  connected: [];
+  authenticated: [];
+  disconnected: [];
+  reconnecting: [attempt: number];
+  error: [err: Error];
+  message: [msg: EvergramChatMessage];
+  reaction: [reaction: EvergramReaction];
+  messageEdited: [edit: EvergramMessageEdited];
+  messageDeleted: [deletion: EvergramMessageDeleted];
+  typing: [event: { chatId: string; sender: string; isTyping: boolean }];
+  delivery: [event: { chatId: string; msgId: string; status: ResponseStatus | undefined; eventType: string }];
+  chatKeyRotated: [event: { chatId: string }];
+  chatRemoved: [chatId: string];
+  joinRequested: [event: JoinRequestedEvent];
+  joinDenied: [event: JoinDeniedEvent];
+  chatRequestReceived: [event: PendingChatRequest];
+  groupInviteReceived: [event: PendingGroupInvite];
+  restricted: [event: ReputationUpdated];
+  visitorRoomRequested: [event: EvergramVisitorRoomRequested];
+  visitorMessage: [event: EvergramVisitorMessage];
+  visitorReaction: [event: EvergramVisitorReaction];
+  visitorMessageEdited: [event: EvergramVisitorMessageEdited];
+  visitorMessageDeleted: [event: EvergramVisitorMessageDeleted];
+  visitorTyping: [event: EvergramVisitorTyping];
+  visitorStatusChanged: [event: EvergramVisitorStatusChanged];
+  visitorRoomTimedOut: [event: EvergramVisitorRoomTimedOut];
+  visitorChannelParticipantJoined: [event: EvergramVisitorChannelParticipantJoined];
+  visitorChannelParticipantLeft: [event: EvergramVisitorChannelParticipantLeft];
+  visitorChannelModeChanged: [event: EvergramVisitorChannelModeChanged];
+  visitorKicked: [event: EvergramVisitorKicked];
+}
+
 // Low-level, faithful mirror of the wire protocol — see webapp/app/lib/evergram-client.ts
 // for the browser equivalent this is modeled on. EvergramBot (bot.ts) wraps
 // this with an ergonomic API; use Core directly when you need control over
-// the raw protocol (e.g. a non-chat integration).
-//
-// Events: "connected", "authenticated", "disconnected", "reconnecting" (attempt),
-// "message" (EvergramChatMessage), "typing", "delivery", "chatKeyRotated" ({chatId}),
-// "reaction" (EvergramReaction), "messageEdited" (EvergramMessageEdited),
-// "messageDeleted" (EvergramMessageDeleted), "joinRequested" (JoinRequestedEvent), "joinDenied" (JoinDeniedEvent),
-// "chatRequestReceived" (PendingChatRequest), "groupInviteReceived" (PendingGroupInvite),
-// "restricted" (ReputationUpdated), "error" (Error),
-// "visitorRoomRequested" (EvergramVisitorRoomRequested), "visitorMessage" (EvergramVisitorMessage),
-// "visitorReaction" (EvergramVisitorReaction), "visitorMessageEdited" (EvergramVisitorMessageEdited),
-// "visitorMessageDeleted" (EvergramVisitorMessageDeleted), "visitorTyping" (EvergramVisitorTyping),
-// "visitorStatusChanged" (EvergramVisitorStatusChanged), "visitorRoomTimedOut" (EvergramVisitorRoomTimedOut),
-// "visitorChannelParticipantJoined" (EvergramVisitorChannelParticipantJoined),
-// "visitorChannelParticipantLeft" (EvergramVisitorChannelParticipantLeft),
-// "visitorChannelModeChanged" (EvergramVisitorChannelModeChanged), "visitorKicked" (EvergramVisitorKicked).
-export class EvergramCore extends EventEmitter {
+// the raw protocol (e.g. a non-chat integration). See EvergramCoreEvents
+// above for every event this class emits and its payload type.
+export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private readonly transport: Transport;
   private readonly wallet: EvergramWallet;
   private readonly device: EvergramDevice;
@@ -378,7 +412,7 @@ export class EvergramCore extends EventEmitter {
     // still in flight server-side.
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
 
-    this.transport = new Transport(opts.url);
+    this.transport = opts.transport ?? new Transport(opts.url);
 
     this.transport.onOpen(() => {
       this.emit("connected");

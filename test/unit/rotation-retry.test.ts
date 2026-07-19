@@ -2,26 +2,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EvergramCore, EvergramDevice } from "../../src/core";
 import { EvergramDeviceRevokedError, EvergramRotationError } from "../../src/errors";
 import { Envelope } from "../../src/proto/evergram";
+import { Transport } from "../../src/transport";
 import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto";
 import { EvergramWallet, generateWallet } from "../../src/wallet";
 
-// Transport opens a real WebSocket in its constructor's connect() — none of
-// these tests call connect(), but EvergramCore's constructor still wires up
-// onOpen/onClose/onReconnecting/onMessage listeners against a live Transport
-// instance, so it needs a no-op stand-in.
-vi.mock("../../src/transport", () => {
-  class FakeTransport {
-    onMessage() { return () => {}; }
-    onOpen() { return () => {}; }
-    onClose() { return () => {}; }
-    onReconnecting() { return () => {}; }
-    isOpen() { return false; }
-    connect() { return Promise.resolve(); }
-    close() {}
-    send() {}
-  }
-  return { Transport: FakeTransport };
-});
+// EvergramCore's constructor wires up onOpen/onClose/onReconnecting/onMessage
+// listeners against its Transport before connect() is ever called — none of
+// these tests call connect(), so a no-op stand-in is enough. Injected via
+// EvergramCoreOptions.transport rather than vi.mock("../../src/transport"),
+// so this only fakes the one instance under test.
+class FakeTransport {
+  onMessage() { return () => {}; }
+  onOpen() { return () => {}; }
+  onClose() { return () => {}; }
+  onReconnecting() { return () => {}; }
+  isOpen() { return false; }
+  connect() { return Promise.resolve(); }
+  close() {}
+  send() {}
+}
 
 function freshIdentity(): { wallet: EvergramWallet; device: EvergramDevice } {
   const wallet = generateWallet();
@@ -36,7 +35,12 @@ function freshIdentity(): { wallet: EvergramWallet; device: EvergramDevice } {
 
 function makeCore(): EvergramCore {
   const { wallet, device } = freshIdentity();
-  return new EvergramCore({ url: "ws://localhost:9000/api/ws", wallet, device });
+  return new EvergramCore({
+    url: "ws://localhost:9000/api/ws",
+    wallet,
+    device,
+    transport: new FakeTransport() as unknown as Transport,
+  });
 }
 
 // retrySendOnRotationRequired / handleEnvelope are private — this suite

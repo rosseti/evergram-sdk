@@ -170,59 +170,69 @@ export class EvergramBot {
     this.core.close();
   }
 
-  onMessage(handler: MessageHandler): () => void {
-    const wrapped = (msg: EvergramChatMessage) => {
-      Promise.resolve(handler(msg, this.core.getChat(msg.chatId))).catch((err) =>
-        this.core.emit("error", err)
-      );
+  // Every onX below follows the same shape: subscribe to a core event,
+  // run the handler, and route a rejected/thrown handler into the core's
+  // "error" event instead of an unhandled rejection — so bot authors never
+  // need their own try/catch just to keep one bad handler from crashing the
+  // process. bindEvent centralizes that plumbing; each onX only supplies
+  // what's specific to its event (context lookup, unsubscribe wiring).
+  private bindEvent<TArg>(event: string, run: (arg: TArg) => void | Promise<void>): () => void {
+    const wrapped = (arg: TArg) => {
+      Promise.resolve(run(arg)).catch((err) => this.core.emit("error", err));
     };
-    this.core.on("message", wrapped);
-    return () => this.core.off("message", wrapped);
+    // Cast needed here only: EvergramCore's on/off are typed per-event (see
+    // EvergramCoreEvents in core.ts) for external callers, but this helper is
+    // intentionally generic over any of that emitter's event names — each
+    // onX call site above still supplies the correct TArg for its event.
+    const core = this.core as unknown as { on(e: string, l: (arg: TArg) => void): void; off(e: string, l: (arg: TArg) => void): void };
+    core.on(event, wrapped);
+    return () => core.off(event, wrapped);
+  }
+
+  // Same as bindEvent, but for visitor events: resolves the VisitorSessionHandle
+  // for the event's roomToken (or undefined if the session already ended)
+  // before invoking the handler — every onVisitorX callback needs this.
+  private bindVisitorEvent<TArg extends { roomToken: string }>(
+    event: string,
+    handler: (arg: TArg, handle: VisitorSessionHandle | undefined) => void | Promise<void>
+  ): () => void {
+    return this.bindEvent<TArg>(event, (arg) => {
+      const meta = this.core.getVisitorSession(arg.roomToken);
+      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: arg.roomToken, ...meta }) : undefined;
+      return handler(arg, handle);
+    });
+  }
+
+  onMessage(handler: MessageHandler): () => void {
+    return this.bindEvent<EvergramChatMessage>("message", (msg) => handler(msg, this.core.getChat(msg.chatId)));
   }
 
   onReaction(handler: ReactionHandler): () => void {
-    const wrapped = (reaction: EvergramReaction) => {
-      Promise.resolve(handler(reaction, this.core.getChat(reaction.chatId))).catch((err) =>
-        this.core.emit("error", err)
-      );
-    };
-    this.core.on("reaction", wrapped);
-    return () => this.core.off("reaction", wrapped);
+    return this.bindEvent<EvergramReaction>("reaction", (reaction) =>
+      handler(reaction, this.core.getChat(reaction.chatId))
+    );
   }
 
   onMessageEdited(handler: MessageEditedHandler): () => void {
-    const wrapped = (edit: EvergramMessageEdited) => {
-      Promise.resolve(handler(edit, this.core.getChat(edit.chatId))).catch((err) =>
-        this.core.emit("error", err)
-      );
-    };
-    this.core.on("messageEdited", wrapped);
-    return () => this.core.off("messageEdited", wrapped);
+    return this.bindEvent<EvergramMessageEdited>("messageEdited", (edit) =>
+      handler(edit, this.core.getChat(edit.chatId))
+    );
   }
 
   onMessageDeleted(handler: MessageDeletedHandler): () => void {
-    const wrapped = (deletion: EvergramMessageDeleted) => {
-      Promise.resolve(handler(deletion, this.core.getChat(deletion.chatId))).catch((err) =>
-        this.core.emit("error", err)
-      );
-    };
-    this.core.on("messageDeleted", wrapped);
-    return () => this.core.off("messageDeleted", wrapped);
+    return this.bindEvent<EvergramMessageDeleted>("messageDeleted", (deletion) =>
+      handler(deletion, this.core.getChat(deletion.chatId))
+    );
   }
 
   onJoinRequest(handler: JoinRequestHandler): () => void {
-    const wrapped = (event: JoinRequestedEvent) => {
-      const req: JoinRequestHandle = {
+    return this.bindEvent<JoinRequestedEvent>("joinRequested", (event) =>
+      handler({
         ...event,
         approve: () => this.core.addParticipant(event.chatId, event.identity),
         deny: () => this.core.denyJoinRequest(event.chatId, event.identity),
-      };
-
-      Promise.resolve(handler(req)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("joinRequested", wrapped);
-    return () => this.core.off("joinRequested", wrapped);
+      })
+    );
   }
 
   // Fires when another identity tries to start a 1:1 chat with this bot
@@ -230,46 +240,38 @@ export class EvergramBot {
   // Also covers requests already pending at connect time, replayed from
   // queryChatsResponse — handlers registered before start() see those too.
   onChatRequest(handler: ChatRequestHandler): () => void {
-    const wrapped = (event: PendingChatRequest) => {
-      const req: ChatRequestHandle = {
-        ...event,
-        approve: () => this.core.acceptChatRequest(event.fromIdentity),
-        deny: () => this.core.blockIdentity(event.fromIdentity),
-      };
+    const asHandle = (event: PendingChatRequest): ChatRequestHandle => ({
+      ...event,
+      approve: () => this.core.acceptChatRequest(event.fromIdentity),
+      deny: () => this.core.blockIdentity(event.fromIdentity),
+    });
 
-      Promise.resolve(handler(req)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("chatRequestReceived", wrapped);
+    const unsubscribe = this.bindEvent<PendingChatRequest>("chatRequestReceived", (event) => handler(asHandle(event)));
 
     for (const req of this.core.getPendingChatRequests()) {
-      wrapped(req);
+      Promise.resolve(handler(asHandle(req))).catch((err) => this.core.emit("error", err));
     }
 
-    return () => this.core.off("chatRequestReceived", wrapped);
+    return unsubscribe;
   }
 
   // Fires when an admin tries to add this bot to a group while
   // requireChatApproval is enabled. Also covers invites already pending at
   // connect time, replayed from queryChatsResponse.
   onGroupInvite(handler: GroupInviteHandler): () => void {
-    const wrapped = (event: PendingGroupInvite) => {
-      const req: GroupInviteHandle = {
-        ...event,
-        approve: () => this.core.acceptGroupInvite(event.chatId),
-        deny: () => this.core.declineGroupInvite(event.chatId),
-      };
+    const asHandle = (event: PendingGroupInvite): GroupInviteHandle => ({
+      ...event,
+      approve: () => this.core.acceptGroupInvite(event.chatId),
+      deny: () => this.core.declineGroupInvite(event.chatId),
+    });
 
-      Promise.resolve(handler(req)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("groupInviteReceived", wrapped);
+    const unsubscribe = this.bindEvent<PendingGroupInvite>("groupInviteReceived", (event) => handler(asHandle(event)));
 
     for (const req of this.core.getPendingGroupInvites()) {
-      wrapped(req);
+      Promise.resolve(handler(asHandle(req))).catch((err) => this.core.emit("error", err));
     }
 
-    return () => this.core.off("groupInviteReceived", wrapped);
+    return unsubscribe;
   }
 
   reply(msg: EvergramChatMessage, text: string) {
@@ -282,118 +284,53 @@ export class EvergramBot {
   // "pending" list — a request missed while this bot was offline is
   // simply gone, same as the webapp's behavior today.
   onVisitorRoomRequested(handler: VisitorRoomRequestedHandler): () => void {
-    const wrapped = (event: EvergramVisitorRoomRequested) => {
-      const handle = buildVisitorSessionHandle(this.core, event);
-      Promise.resolve(handler(handle, event.firstMessage)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorRoomRequested", wrapped);
-    return () => this.core.off("visitorRoomRequested", wrapped);
+    return this.bindEvent<EvergramVisitorRoomRequested>("visitorRoomRequested", (event) =>
+      handler(buildVisitorSessionHandle(this.core, event), event.firstMessage)
+    );
   }
 
   onVisitorMessage(handler: VisitorMessageHandler): () => void {
-    const wrapped = (msg: EvergramVisitorMessage) => {
-      const meta = this.core.getVisitorSession(msg.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: msg.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(msg, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorMessage", wrapped);
-    return () => this.core.off("visitorMessage", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorMessage>("visitorMessage", handler);
   }
 
   onVisitorReaction(handler: VisitorReactionHandler): () => void {
-    const wrapped = (reaction: EvergramVisitorReaction) => {
-      const meta = this.core.getVisitorSession(reaction.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: reaction.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(reaction, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorReaction", wrapped);
-    return () => this.core.off("visitorReaction", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorReaction>("visitorReaction", handler);
   }
 
   onVisitorMessageEdited(handler: VisitorMessageEditedHandler): () => void {
-    const wrapped = (edit: EvergramVisitorMessageEdited) => {
-      const meta = this.core.getVisitorSession(edit.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: edit.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(edit, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorMessageEdited", wrapped);
-    return () => this.core.off("visitorMessageEdited", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorMessageEdited>("visitorMessageEdited", handler);
   }
 
   onVisitorMessageDeleted(handler: VisitorMessageDeletedHandler): () => void {
-    const wrapped = (deletion: EvergramVisitorMessageDeleted) => {
-      const meta = this.core.getVisitorSession(deletion.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: deletion.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(deletion, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorMessageDeleted", wrapped);
-    return () => this.core.off("visitorMessageDeleted", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorMessageDeleted>("visitorMessageDeleted", handler);
   }
 
   onVisitorTyping(handler: VisitorTypingHandler): () => void {
-    const wrapped = (event: EvergramVisitorTyping) => {
-      const meta = this.core.getVisitorSession(event.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorTyping", wrapped);
-    return () => this.core.off("visitorTyping", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorTyping>("visitorTyping", handler);
   }
 
   // public_group only — fires when another participant announces itself
   // (a fresh join) or renames mid-session. See EvergramVisitorChannelParticipantJoined.
   onVisitorChannelParticipantJoined(handler: VisitorChannelParticipantJoinedHandler): () => void {
-    const wrapped = (event: EvergramVisitorChannelParticipantJoined) => {
-      const meta = this.core.getVisitorSession(event.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorChannelParticipantJoined", wrapped);
-    return () => this.core.off("visitorChannelParticipantJoined", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorChannelParticipantJoined>("visitorChannelParticipantJoined", handler);
   }
 
   // public_group only — fires when a channel participant disconnects.
   onVisitorChannelParticipantLeft(handler: VisitorChannelParticipantLeftHandler): () => void {
-    const wrapped = (event: EvergramVisitorChannelParticipantLeft) => {
-      const meta = this.core.getVisitorSession(event.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorChannelParticipantLeft", wrapped);
-    return () => this.core.off("visitorChannelParticipantLeft", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorChannelParticipantLeft>("visitorChannelParticipantLeft", handler);
   }
 
   // public_group only — fires whenever a moderateChannel() action (by this
   // bot or another op) changes the channel's moderated flag or op/voice roster.
   onVisitorChannelModeChanged(handler: VisitorChannelModeChangedHandler): () => void {
-    const wrapped = (event: EvergramVisitorChannelModeChanged) => {
-      const meta = this.core.getVisitorSession(event.roomToken);
-      const handle = meta ? buildVisitorSessionHandle(this.core, { roomToken: event.roomToken, ...meta }) : undefined;
-      Promise.resolve(handler(event, handle)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorChannelModeChanged", wrapped);
-    return () => this.core.off("visitorChannelModeChanged", wrapped);
+    return this.bindVisitorEvent<EvergramVisitorChannelModeChanged>("visitorChannelModeChanged", handler);
   }
 
   // public_group only — fires when this bot's own channel subscription was
   // kicked or banned. No handle is passed: the session is already torn down
   // by the time this fires (see core.ts's createVisitorSession onStatusChange).
   onVisitorKicked(handler: VisitorKickedHandler): () => void {
-    const wrapped = (event: EvergramVisitorKicked) => {
-      Promise.resolve(handler(event)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorKicked", wrapped);
-    return () => this.core.off("visitorKicked", wrapped);
+    return this.bindEvent<EvergramVisitorKicked>("visitorKicked", handler);
   }
 
   // Fires only in the rarer race where the widget owner had a device
@@ -401,11 +338,6 @@ export class EvergramBot {
   // — the common "no device online" case is rejected synchronously to the
   // visitor and this bot never even hears about that conversation.
   onVisitorRoomTimedOut(handler: VisitorRoomTimedOutHandler): () => void {
-    const wrapped = (event: EvergramVisitorRoomTimedOut) => {
-      Promise.resolve(handler(event)).catch((err) => this.core.emit("error", err));
-    };
-
-    this.core.on("visitorRoomTimedOut", wrapped);
-    return () => this.core.off("visitorRoomTimedOut", wrapped);
+    return this.bindEvent<EvergramVisitorRoomTimedOut>("visitorRoomTimedOut", handler);
   }
 }

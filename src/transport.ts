@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import { ClientMessage, ServerMessage } from "./proto/evergram";
 import { EvergramConnectionError } from "./errors";
+import { computeBackoffMs } from "./backoff";
 
 export type TransportListener = (msg: ServerMessage) => void;
 
@@ -116,9 +117,7 @@ export class Transport {
   private scheduleReconnect(): void {
     this.reconnectAttempts++;
     const attempt = this.reconnectAttempts;
-    const base = 1000 * Math.pow(2, attempt - 1);
-    const jitter = Math.floor(Math.random() * 500);
-    const delay = Math.min(base + jitter, 30_000);
+    const delay = computeBackoffMs(attempt, { baseMs: 1000, capMs: 30_000, jitterMs: 500 });
 
     for (const cb of this.reconnectingListeners) cb(attempt);
 

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import nacl from "tweetnacl";
+import { EvergramValidationError } from "./errors";
 
 // Ports the primitives from webapp/app/lib/crypto.ts and
 // webapp/app/ui/providers/EvergramProvider.tsx's chat-key derivation —
@@ -37,7 +38,7 @@ export function encryptMessage(symKey: Uint8Array, text: string): { nonce: strin
   const box = nacl.secretbox(msg, nonce, symKey);
 
   if (!box) {
-    throw new Error("Failed to encrypt message (nacl.secretbox)");
+    throw new EvergramValidationError("encryption_failed", "Failed to encrypt message (nacl.secretbox)");
   }
 
   return {
@@ -96,7 +97,7 @@ export function deriveDeviceId(devicePubHex: string): string {
   const normalized = devicePubHex.toLowerCase().replace(/^0x/, "");
 
   if (!/^[0-9a-f]+$/.test(normalized) || normalized.length < 64) {
-    throw new Error("invalid_device_pubkey_format");
+    throw new EvergramValidationError("invalid_device_pubkey_format");
   }
 
   const hash = createHash("sha256").update(Buffer.from(normalized, "hex")).digest();
