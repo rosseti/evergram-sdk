@@ -21,7 +21,7 @@
     "example:widget-channel-bot": "tsx examples/widget-channel-bot/index.ts"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.10.1",
+    "@bufbuild/protobuf": "^2.12.1",
     "ripple-keypairs": "^2.0.0",
     "tweetnacl": "^1.0.3",
     "ws": "^8.21.1",
