@@ -86,6 +86,24 @@ const MAX_SEEN_ENVELOPE_KEYS = 5000;
 // of a long-running bot otherwise.
 const MAX_ORIGINAL_CONTENT_TYPES = 5000;
 
+// Bounds the number of distinct chatIds pendingEnvelopes can hold at once.
+// MAX_PENDING_ENVELOPES_PER_CHAT above only caps each chat's queue depth —
+// it does nothing to stop a malicious/untrusted gateway (see
+// context/boundaries.md) from pushing one envelope each for unlimited
+// fabricated chatIds that will never resolve a key (no ChatInfo for them
+// ever arrives), growing the map itself without bound. Same FIFO eviction
+// as MAX_SEEN_ENVELOPE_KEYS above; a real chat this device belongs to gets
+// its ChatInfo pushed promptly, well within this many distinct in-flight
+// chats.
+const MAX_PENDING_CHATS = 200;
+
+// Bounds pendingChatRequests/pendingGroupInvites, both populated purely
+// from gateway pushes (fromIdentity / chatId are attacker-controlled from
+// the SDK's point of view). Same FIFO eviction and rationale as
+// MAX_PENDING_CHATS above.
+const MAX_PENDING_CHAT_REQUESTS = 500;
+const MAX_PENDING_GROUP_INVITES = 500;
+
 // Mirrors the OS family naming the webapp's platform-label.ts already uses
 // for the "{Browser} · {OS}" convention (Preferences > Devices), so the
 // device owner sees a consistent OS name regardless of which client
@@ -151,6 +169,12 @@ interface PendingRequest {
   resolve: (value: any) => void;
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
+  // Disambiguates concurrent same-type calls (e.g. two getProfile() calls
+  // in flight at once) — the wire protocol has no correlation id, but some
+  // responses already echo back enough of the request to match on, same
+  // idea as webapp's _sendAndWaitResponse `matcher` param. Absent for calls
+  // where no ambiguity is possible or no echoed field exists to match on.
+  matcher?: (value: any) => boolean;
 }
 
 export interface EvergramChatMessage {
@@ -596,7 +620,13 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   async acceptChatRequest(fromIdentity: string) {
     const msg = ClientMessage.create({ acceptChatRequest: { fromIdentity } });
 
-    const resp = await this.requestWithReauth(msg, "acceptChatRequestResponse");
+    // No field on AcceptChatRequestResponse echoes fromIdentity directly,
+    // but each pending request is for a distinct chat, so the resulting
+    // chat's participants disambiguate concurrent accepts the same way a
+    // chatId match would.
+    const resp = await this.requestWithReauth(msg, "acceptChatRequestResponse", undefined, (v) =>
+      !!v.chat?.participants?.includes(fromIdentity)
+    );
     this.pendingChatRequests.delete(fromIdentity);
     // handlePush() already applies resp.chat via processChatInfo() before
     // this await resolves — see createChat() above for why calling it again
@@ -609,14 +639,18 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // gateway on message delivery for chats that were already accepted.
   async blockIdentity(targetIdentity: string) {
     const msg = ClientMessage.create({ blockIdentity: { targetIdentity } });
-    const resp = await this.requestWithReauth(msg, "blockIdentityResponse");
+    const resp = await this.requestWithReauth(msg, "blockIdentityResponse", undefined, (v) =>
+      v.targetIdentity === targetIdentity
+    );
     this.pendingChatRequests.delete(targetIdentity);
     return resp;
   }
 
   async unblockIdentity(targetIdentity: string) {
     const msg = ClientMessage.create({ unblockIdentity: { targetIdentity } });
-    return this.requestWithReauth(msg, "unblockIdentityResponse");
+    return this.requestWithReauth(msg, "unblockIdentityResponse", undefined, (v) =>
+      v.targetIdentity === targetIdentity
+    );
   }
 
   async updatePrivacySettings(requireChatApproval: boolean) {
@@ -636,7 +670,9 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // chat's key may have rotated again in the meantime.
   async acceptGroupInvite(chatId: string) {
     const msg = ClientMessage.create({ acceptGroupInvite: { chatId } });
-    const resp = await this.requestWithReauth(msg, "acceptGroupInviteResponse");
+    const resp = await this.requestWithReauth(msg, "acceptGroupInviteResponse", undefined, (v) =>
+      v.chatId === chatId
+    );
     this.pendingGroupInvites.delete(chatId);
     return resp;
   }
@@ -645,7 +681,9 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // blockIdentity separately for that).
   async declineGroupInvite(chatId: string) {
     const msg = ClientMessage.create({ declineGroupInvite: { chatId } });
-    const resp = await this.requestWithReauth(msg, "declineGroupInviteResponse");
+    const resp = await this.requestWithReauth(msg, "declineGroupInviteResponse", undefined, (v) =>
+      v.chatId === chatId
+    );
     this.pendingGroupInvites.delete(chatId);
     return resp;
   }
@@ -894,12 +932,16 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
 
   async addParticipant(chatId: string, remoteIdentity: string) {
     const msg = ClientMessage.create({ addParticipant: { chatId, remoteIdentity } });
-    return this.requestWithReauth(msg, "addParticipantResponse");
+    return this.requestWithReauth(msg, "addParticipantResponse", undefined, (v) =>
+      v.chatId === chatId && v.remoteIdentity === remoteIdentity
+    );
   }
 
   async removeParticipant(chatId: string, remoteIdentity: string) {
     const msg = ClientMessage.create({ removeParticipant: { chatId, remoteIdentity } });
-    return this.requestWithReauth(msg, "removeParticipantResponse");
+    return this.requestWithReauth(msg, "removeParticipantResponse", undefined, (v) =>
+      v.chatId === chatId && v.remoteIdentity === remoteIdentity
+    );
   }
 
   // Rejected by the contract for one-on-one chats (leave_not_allowed) — group
@@ -910,7 +952,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // local cleanup is needed here.
   async leaveChat(chatId: string) {
     const msg = ClientMessage.create({ leaveChat: { chatId } });
-    return this.requestWithReauth(msg, "leaveChatResponse");
+    return this.requestWithReauth(msg, "leaveChatResponse", undefined, (v) => v.chatId === chatId);
   }
 
   // The gateway does the actual key generation/wrapping server-side (it
@@ -921,12 +963,18 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // from the resulting rotateChatVersionResponse before this call resolves.
   async rotateChatVersion(chatId: string) {
     const msg = ClientMessage.create({ rotateChatVersion: { chatId } });
-    return this.requestWithReauth(msg, "rotateChatVersionResponse");
+    return this.requestWithReauth(msg, "rotateChatVersionResponse", undefined, (v) => v.chat?.chatId === chatId);
   }
 
   async getProfile(remoteIdentity: string) {
-    const msg = ClientMessage.create({ getProfile: { remoteIdentity: parseIdentityKey(remoteIdentity) } });
-    const resp = await this.requestWithReauth(msg, "getProfileResponse");
+    const parsed = parseIdentityKey(remoteIdentity);
+    const msg = ClientMessage.create({ getProfile: { remoteIdentity: parsed } });
+    // getProfileResponse echoes remote_identity precisely so concurrent
+    // getProfile() calls for different identities can't cross-resolve
+    // each other (see resolvePendingRequests).
+    const resp = await this.requestWithReauth(msg, "getProfileResponse", undefined, (v) =>
+      v.remoteIdentity?.address === parsed.address
+    );
     return resp.profile;
   }
 
@@ -1345,13 +1393,15 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // like the gateway's AuthChallenge sent right after connect.
   private waitForMessage<K extends keyof ServerMessage>(
     expectedField: K,
-    timeoutMs = this.requestTimeoutMs
+    timeoutMs = this.requestTimeoutMs,
+    matcher?: (value: NonNullable<ServerMessage[K]>) => boolean
   ): Promise<NonNullable<ServerMessage[K]>> {
     return new Promise((resolve, reject) => {
       const entry: PendingRequest = {
         expectedField,
         resolve,
         reject,
+        matcher,
         timer: setTimeout(() => {
           const idx = this.pendingRequests.indexOf(entry);
           if (idx !== -1) this.pendingRequests.splice(idx, 1);
@@ -1366,9 +1416,10 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private request<K extends keyof ServerMessage>(
     msg: ClientMessage,
     expectedField: K,
-    timeoutMs = this.requestTimeoutMs
+    timeoutMs = this.requestTimeoutMs,
+    matcher?: (value: NonNullable<ServerMessage[K]>) => boolean
   ): Promise<NonNullable<ServerMessage[K]>> {
-    const pending = this.waitForMessage(expectedField, timeoutMs);
+    const pending = this.waitForMessage(expectedField, timeoutMs, matcher);
     this.transport.send(msg);
     return pending;
   }
@@ -1381,14 +1432,15 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private async requestWithReauth<K extends keyof ServerMessage>(
     msg: ClientMessage,
     expectedField: K,
-    timeoutMs = this.requestTimeoutMs
+    timeoutMs = this.requestTimeoutMs,
+    matcher?: (value: NonNullable<ServerMessage[K]>) => boolean
   ): Promise<NonNullable<ServerMessage[K]>> {
     try {
-      return await this.request(msg, expectedField, timeoutMs);
+      return await this.request(msg, expectedField, timeoutMs, matcher);
     } catch (err) {
       if (err instanceof EvergramAuthError) {
         await this.reconnectAndAuthenticate();
-        return this.request(msg, expectedField, timeoutMs);
+        return this.request(msg, expectedField, timeoutMs, matcher);
       }
       throw err;
     }
@@ -1421,16 +1473,39 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private resolvePendingRequests(msg: ServerMessage): void {
     const resolvedTypes = new Set<keyof ServerMessage>();
 
-    for (let i = 0; i < this.pendingRequests.length; i++) {
-      const entry = this.pendingRequests[i];
-      if (resolvedTypes.has(entry.expectedField)) continue;
+    for (const expectedField of new Set(this.pendingRequests.map((e) => e.expectedField))) {
+      if (resolvedTypes.has(expectedField)) continue;
 
-      const value = (msg as any)[entry.expectedField];
+      const value = (msg as any)[expectedField];
       if (value === undefined) continue;
 
-      resolvedTypes.add(entry.expectedField);
-      this.pendingRequests.splice(i, 1);
-      i--;
+      // A oneof field only ever carries one value per message, so at most
+      // one waiter of this type can legitimately be resolved by it. Prefer
+      // a waiter whose matcher confirms this value is actually theirs (e.g.
+      // getProfileResponse.remoteIdentity matching the identity they asked
+      // for) over plain FIFO — otherwise two concurrent same-type calls can
+      // resolve each other's promise with the wrong result.
+      //
+      // The final `?? candidates[0]` fallback is deliberate, not a gap: some
+      // contract error paths (e.g. handleAddParticipant's not_admin/
+      // chat_not_found/membership_conflict branches) return status.ok=false
+      // without echoing back chatId/remoteIdentity, so a matcher can have
+      // nothing to match against. Without this fallback that leaves every
+      // matcher-holding waiter of this type unresolved until it times out —
+      // the same "Timeout waiting for X" symptom masking a real error that
+      // webapp's _sendAndWaitResponse hit historically (see its
+      // hasOtherField comment) before that fallback was added there. Best
+      // effort here means the same FIFO guess this code made before
+      // matchers existed, never a hang.
+      const candidates = this.pendingRequests.filter((e) => e.expectedField === expectedField);
+      const idx = this.pendingRequests.indexOf(
+        candidates.find((e) => e.matcher?.(value)) ?? candidates.find((e) => !e.matcher) ?? candidates[0]
+      );
+      if (idx === -1) continue;
+
+      const entry = this.pendingRequests[idx];
+      resolvedTypes.add(expectedField);
+      this.pendingRequests.splice(idx, 1);
       clearTimeout(entry.timer);
 
       if (value.status && value.status.ok === false) {
@@ -1483,24 +1558,24 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     // Boot sync: silently merge, mirroring how queryChatsResponse.results
     // above updates `chats` without emitting per-item events.
     for (const req of msg.queryChatsResponse?.pendingChatRequests ?? []) {
-      if (req.fromIdentity) this.pendingChatRequests.set(req.fromIdentity, req);
+      if (req.fromIdentity) this.boundedMapSet(this.pendingChatRequests, req.fromIdentity, req, MAX_PENDING_CHAT_REQUESTS);
     }
 
     // Live push: a CreateChat from another identity is awaiting our
     // approval right now — this one is event-worthy, mirroring joinRequestedEvent.
     if (msg.chatRequestReceived?.request) {
       const req = msg.chatRequestReceived.request;
-      if (req.fromIdentity) this.pendingChatRequests.set(req.fromIdentity, req);
+      if (req.fromIdentity) this.boundedMapSet(this.pendingChatRequests, req.fromIdentity, req, MAX_PENDING_CHAT_REQUESTS);
       this.emit("chatRequestReceived", req);
     }
 
     for (const invite of msg.queryChatsResponse?.pendingGroupInvites ?? []) {
-      if (invite.chatId) this.pendingGroupInvites.set(invite.chatId, invite);
+      if (invite.chatId) this.boundedMapSet(this.pendingGroupInvites, invite.chatId, invite, MAX_PENDING_GROUP_INVITES);
     }
 
     if (msg.groupInviteReceived?.invite) {
       const invite = msg.groupInviteReceived.invite;
-      if (invite.chatId) this.pendingGroupInvites.set(invite.chatId, invite);
+      if (invite.chatId) this.boundedMapSet(this.pendingGroupInvites, invite.chatId, invite, MAX_PENDING_GROUP_INVITES);
       this.emit("groupInviteReceived", invite);
     }
 
@@ -1633,6 +1708,15 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     }
   }
 
+  // FIFO-evicting Map.set — see MAX_PENDING_CHAT_REQUESTS/MAX_PENDING_GROUP_INVITES.
+  private boundedMapSet<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+    if (!map.has(key) && map.size >= max) {
+      const oldestKey = map.keys().next().value!;
+      map.delete(oldestKey);
+    }
+    map.set(key, value);
+  }
+
   // Mirrors EvergramProvider.tsx's pendingRef/flushPendingForChat pattern:
   // an envelope can arrive before this device has derived the chat's
   // symmetric key (e.g. right after being added to a chat). Queue it and
@@ -1648,6 +1732,15 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
         this.emit("error", new EvergramValidationError(
           "pending_envelope_queue_overflow",
           `chat ${env.chatId}'s key never resolved after ${MAX_PENDING_ENVELOPES_PER_CHAT} queued envelopes — dropping the oldest. Check chatKeyRotated/error events for this chat.`
+        ));
+      }
+
+      if (!this.pendingEnvelopes.has(env.chatId) && this.pendingEnvelopes.size >= MAX_PENDING_CHATS) {
+        const oldestChatId = this.pendingEnvelopes.keys().next().value!;
+        this.pendingEnvelopes.delete(oldestChatId);
+        this.emit("error", new EvergramValidationError(
+          "pending_chat_queue_overflow",
+          `${MAX_PENDING_CHATS} distinct chats have envelopes awaiting their key — dropping the oldest chat's queue (${oldestChatId}).`
         ));
       }
 
