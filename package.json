@@ -24,7 +24,7 @@
     "@bufbuild/protobuf": "^2.10.1",
     "ripple-keypairs": "^2.0.0",
     "tweetnacl": "^1.0.3",
-    "ws": "^8.18.3",
+    "ws": "^8.21.1",
     "xrpl": "^4.5.0"
   },
   "devDependencies": {
