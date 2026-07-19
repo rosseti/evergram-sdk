@@ -1,15 +1,37 @@
-# @evergram/sdk
+# Evergram SDK
 
-Headless SDK for building bots and programmatic integrations on the Evergram
-protocol — direct XRPL wallet-signature authentication (no Xaman app needed),
-end-to-end encrypted messaging (including reactions, edit, and delete), chat
-key rotation, embeddable-widget management, anonymous widget-visitor chat,
-group management, and Discovery.
+[![CI](https://github.com/rosseti/evergram-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/rosseti/evergram-sdk/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status: not yet ready for public release.** The wallet-signature auth
-> path this SDK depends on is new and is the first 100%-programmatic
-> authentication mechanism in this system. See "Security status" below
-> before pointing this at anything other than your own local/dev stack.
+Build bots for Evergram — decentralized, end-to-end encrypted messaging —
+with nothing but a Node process and an XRPL wallet key. No app to install,
+no OAuth: your bot authenticates by signing a challenge with its own wallet,
+then sends and receives E2EE messages (reactions, edits, deletes), manages
+groups, and runs embeddable chat widgets for anonymous visitors — all
+through one typed API.
+
+> **Status: Beta.** The wallet-signature auth path this SDK depends on is
+> new and is the first 100%-programmatic authentication mechanism in this
+> system. See "Security status" below before relying on it for anything
+> beyond local/dev use.
+
+## Contents
+
+- [Two layers](#two-layers)
+- [Quick start](#quick-start)
+- [Examples](#examples)
+- [Auth flow (signed_message)](#auth-flow-signed_message)
+- [Security status](#security-status)
+- [Device keys & backup](#device-keys--backup)
+- [How chat keys actually move](#how-chat-keys-actually-move)
+- [Access tiers](#access-tiers)
+- [Rate limits](#rate-limits)
+- [Typed errors](#typed-errors)
+- [Message content & builders](#message-content--builders)
+- [Widgets & visitor chat](#widgets--visitor-chat)
+- [API reference](#api-reference)
+- [Known protocol limitations](#known-protocol-limitations-not-sdk-bugs)
+- [Testing](#testing)
 
 ## Two layers
 
@@ -30,7 +52,7 @@ canonical schema changes) and `src/crypto.ts`.
 ## Quick start
 
 ```ts
-import { EvergramBot, generateWallet, generateDeviceKeypair, deriveDeviceId } from "@evergram/sdk";
+import { EvergramBot, generateWallet, generateDeviceKeypair, deriveDeviceId } from "evergram-sdk";
 
 const wallet = generateWallet(); // XRPL keypair — persist wallet.seed somewhere safe
 const { pubHex, privHex } = generateDeviceKeypair();
@@ -249,7 +271,7 @@ A decrypted message's `text` is either plain text or a small JSON envelope
 on what a given wire payload means.
 
 ```ts
-import { parseMessageContent, formatMessagePreview } from "@evergram/sdk";
+import { parseMessageContent, formatMessagePreview } from "evergram-sdk";
 
 bot.onMessage((msg) => {
   switch (msg.content.type) {
@@ -400,19 +422,17 @@ except where noted as fire-and-forget.
 
 **Events** (`core.on(event, handler)`):
 
-`connected`, `authenticated`, `disconnected`, `reconnecting` (attempt
-number), `message` (`EvergramChatMessage`), `reaction` (`EvergramReaction`),
-`messageEdited` (`EvergramMessageEdited`), `messageDeleted`
-(`EvergramMessageDeleted`), `typing`, `delivery`, `chatKeyRotated`
-(`{chatId}`), `joinRequested`, `chatRequestReceived`, `groupInviteReceived`,
-`restricted` (`ReputationUpdated`), `error`, `visitorRoomRequested`
-(`EvergramVisitorRoomRequested`), `visitorMessage`
-(`EvergramVisitorMessage`), `visitorReaction` (`EvergramVisitorReaction`),
-`visitorMessageEdited` (`EvergramVisitorMessageEdited`),
-`visitorMessageDeleted` (`EvergramVisitorMessageDeleted`), `visitorTyping`
-(`EvergramVisitorTyping`), `visitorStatusChanged`
-(`EvergramVisitorStatusChanged`), `visitorRoomTimedOut`
-(`EvergramVisitorRoomTimedOut`).
+Every event name and its exact payload type is defined in one place —
+[`EvergramCoreEvents`](src/core.ts) — rather than duplicated here in prose,
+so `core.on`/`core.emit` are type-checked against it directly (a typo like
+`core.on("mesage", ...)` is a compile error) and this doc can't drift out of
+sync with what the SDK actually emits. Grouped by area, for a quick sense of
+what's available:
+
+- **Connection**: `connected`, `authenticated`, `disconnected`, `reconnecting`, `error`
+- **Messaging**: `message`, `reaction`, `messageEdited`, `messageDeleted`, `typing`, `delivery`
+- **Chats**: `chatKeyRotated`, `chatRemoved`, `joinRequested`, `joinDenied`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
+- **Widget-visitor chat**: `visitorRoomRequested`, `visitorMessage`, `visitorReaction`, `visitorMessageEdited`, `visitorMessageDeleted`, `visitorTyping`, `visitorStatusChanged`, `visitorRoomTimedOut`, `visitorChannelParticipantJoined`, `visitorChannelParticipantLeft`, `visitorChannelModeChanged`, `visitorKicked`
 
 ### `EvergramBot`
 

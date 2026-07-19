@@ -1,5 +1,5 @@
 {
-  "name": "@evergram/sdk",
+  "name": "evergram-sdk",
   "version": "0.1.0",
   "description": "Headless SDK for building bots and programmatic integrations on the Evergram protocol (XRPL wallet-signature auth, E2EE messaging).",
   "license": "MIT",
