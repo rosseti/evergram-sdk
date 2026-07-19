@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EvergramCore } from "../../src/core";
-import { openRawConnection, RawClient } from "./_raw-client";
-import { buildAuthMessage, freshIdentity, WS_URL } from "./_helpers";
+import { EvergramCore } from "../../src/core.js";
+import { openRawConnection, RawClient } from "./_raw-client.js";
+import { buildAuthMessage, freshIdentity, WS_URL } from "./_helpers.js";
 
 // Requires the local stack up (docker-compose.yml or an equivalent gateway)
 // reachable at WS_URL — see sdk/README.md's "Testing" section. This suite

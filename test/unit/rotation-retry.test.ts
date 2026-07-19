@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EvergramCore, EvergramDevice } from "../../src/core";
-import { EvergramDeviceRevokedError, EvergramRotationError } from "../../src/errors";
-import { Envelope } from "../../src/proto/evergram";
-import { Transport } from "../../src/transport";
-import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto";
-import { EvergramWallet, generateWallet } from "../../src/wallet";
+import { EvergramCore, EvergramDevice } from "../../src/core.js";
+import { EvergramDeviceRevokedError, EvergramRotationError } from "../../src/errors.js";
+import { Envelope } from "../../src/proto/evergram.js";
+import { Transport } from "../../src/transport.js";
+import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto.js";
+import { EvergramWallet, generateWallet } from "../../src/wallet.js";
 
 // EvergramCore's constructor wires up onOpen/onClose/onReconnecting/onMessage
 // listeners against its Transport before connect() is ever called — none of
@@ -155,7 +155,7 @@ describe("rotation-retry state machine", () => {
     expect(payload.status.ok).toBe(false);
     expect(payload.status.code).toBe("device_revoked");
     // Confirms the underlying error class this code maps to, per errors.ts.
-    const { errorFromCode } = await import("../../src/errors");
+    const { errorFromCode } = await import("../../src/errors.js");
     expect(errorFromCode(payload.status.code)).toBeInstanceOf(EvergramDeviceRevokedError);
   });
 });

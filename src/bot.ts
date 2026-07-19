@@ -16,9 +16,9 @@ import {
   EvergramVisitorRoomRequested,
   EvergramVisitorRoomTimedOut,
   EvergramVisitorTyping,
-} from "./core";
-import { ChatInfo, JoinRequestedEvent, ModerationAction, PendingChatRequest, PendingGroupInvite } from "./proto/evergram";
-import { EphemeralEditEvent, EphemeralRemoveEvent, EphemeralTextEvent } from "./ephemeral-relay-session";
+} from "./core.js";
+import { ChatInfo, JoinRequestedEvent, ModerationAction, PendingChatRequest, PendingGroupInvite } from "./proto/evergram.js";
+import { EphemeralEditEvent, EphemeralRemoveEvent, EphemeralTextEvent } from "./ephemeral-relay-session.js";
 
 export interface JoinRequestHandle extends JoinRequestedEvent {
   /** Adds the requester as a participant. */

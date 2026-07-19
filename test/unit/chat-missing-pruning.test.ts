@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { EvergramCore, EvergramDevice } from "../../src/core";
-import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto";
-import { EvergramWallet, generateWallet } from "../../src/wallet";
-import { ChatSyncResult_Status, ServerMessage } from "../../src/proto/evergram";
+import { EvergramCore, EvergramDevice } from "../../src/core.js";
+import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto.js";
+import { EvergramWallet, generateWallet } from "../../src/wallet.js";
+import { ChatSyncResult_Status, ServerMessage } from "../../src/proto/evergram.js";
 
 // Regression coverage for a gap found while auditing the chatVersion/
 // metaVersion split: handlePush() built chatCandidates from queryChatsResponse

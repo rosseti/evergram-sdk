@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAudioMessage, buildPaymentReceipt, buildPaymentRequest } from "../../src/message-builders";
-import { parseMessageContent } from "../../src/message-content";
+import { buildAudioMessage, buildPaymentReceipt, buildPaymentRequest } from "../../src/message-builders.js";
+import { parseMessageContent } from "../../src/message-content.js";
 
 describe("message-builders", () => {
   it("buildPaymentRequest round-trips through parseMessageContent, discriminated by `type` not `__ev`", () => {

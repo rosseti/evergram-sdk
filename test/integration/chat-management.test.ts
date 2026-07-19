@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EvergramCore } from "../../src/core";
-import { identityKey } from "../../src/identity";
-import { ChainFamily } from "../../src/proto/evergram";
-import { adminIdentityOrSkip, freshIdentity, waitUntil, WS_URL } from "./_helpers";
+import { EvergramCore } from "../../src/core.js";
+import { identityKey } from "../../src/identity.js";
+import { ChainFamily } from "../../src/proto/evergram.js";
+import { adminIdentityOrSkip, freshIdentity, waitUntil, WS_URL } from "./_helpers.js";
 
 // Requires the local stack up — see sdk/README.md's "Testing" section.
 

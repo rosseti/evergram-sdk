@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { EvergramBot } from "../../src";
-import { loadOrCreateIdentity } from "../_shared/load-identity";
+import { EvergramBot } from "../../src/index.js";
+import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const WEBHOOK_URL = process.env.WEBHOOK_URL;

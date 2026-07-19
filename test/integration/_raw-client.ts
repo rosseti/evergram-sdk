@@ -1,5 +1,5 @@
 import WebSocket from "ws";
-import { ClientMessage, ServerMessage } from "../../src/proto/evergram";
+import { ClientMessage, ServerMessage } from "../../src/proto/evergram.js";
 
 // A deliberately low-level WS client for the auth integration tests below —
 // EvergramCore always builds a *correctly* signed Auth from a nonce it just

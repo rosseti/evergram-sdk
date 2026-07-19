@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import nacl from "tweetnacl";
-import { EvergramBot, VisitorSessionHandle } from "../../src/bot";
-import { EvergramCore } from "../../src/core";
-import { buildTextFramePayload, decryptTextFramePayload } from "../../src/ephemeral-relay-session";
-import { decodeRelayPayload, encodeRelayPayload } from "../../src/relay-message-codec";
-import { ClientMessage, RelayMessageKind } from "../../src/proto/evergram";
-import { freshIdentity, waitUntil, WS_URL } from "./_helpers";
-import { openRawConnection, RawClient } from "./_raw-client";
+import { EvergramBot, VisitorSessionHandle } from "../../src/bot.js";
+import { EvergramCore } from "../../src/core.js";
+import { buildTextFramePayload, decryptTextFramePayload } from "../../src/ephemeral-relay-session.js";
+import { decodeRelayPayload, encodeRelayPayload } from "../../src/relay-message-codec.js";
+import { ClientMessage, RelayMessageKind } from "../../src/proto/evergram.js";
+import { freshIdentity, waitUntil, WS_URL } from "./_helpers.js";
+import { openRawConnection, RawClient } from "./_raw-client.js";
 
 // Requires the local stack up — see sdk/README.md's "Testing" section. The
 // "visitor" side is deliberately the same low-level _raw-client.ts helper

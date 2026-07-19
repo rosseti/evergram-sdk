@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from "vitest";
-import { EvergramCore } from "../../src/core";
-import { freshIdentity, WS_URL } from "./_helpers";
+import { EvergramCore } from "../../src/core.js";
+import { freshIdentity, WS_URL } from "./_helpers.js";
 
 // Requires the local stack up — see sdk/README.md's "Testing" section.
 // Both cases here matter specifically because of the nonce redesign: every

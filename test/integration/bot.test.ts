@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EvergramBot } from "../../src/bot";
-import { freshIdentity, WS_URL } from "./_helpers";
+import { EvergramBot } from "../../src/bot.js";
+import { freshIdentity, WS_URL } from "./_helpers.js";
 
 // Requires the local stack up — see sdk/README.md's "Testing" section.
 

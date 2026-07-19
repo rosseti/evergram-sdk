@@ -1,5 +1,5 @@
-import { decryptMessage, encryptMessage, generateMsgId } from "./crypto";
-import { RelayMessageKind } from "./relay-message-codec";
+import { decryptMessage, encryptMessage, generateMsgId } from "./crypto.js";
+import { RelayMessageKind } from "./relay-message-codec.js";
 
 // Ported from the webapp's app/lib/ephemeral-relay-session.ts — see
 // [[evergram-sdk-relay-duplication]] memory. Keep this file's shape

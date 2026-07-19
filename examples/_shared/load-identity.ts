@@ -6,7 +6,7 @@ import {
   generateWallet,
   deriveDeviceId,
   walletFromSeed,
-} from "../../src";
+} from "../../src/index.js";
 
 interface StoredIdentity {
   walletSeed: string;

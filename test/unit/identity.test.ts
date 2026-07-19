@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { identityKey, parseIdentityKey } from "../../src/identity";
-import { ChainFamily } from "../../src/proto/evergram";
+import { identityKey, parseIdentityKey } from "../../src/identity.js";
+import { ChainFamily } from "../../src/proto/evergram.js";
 
 describe("identity", () => {
   it("identityKey formats as chainFamily:address, matching webapp/app/lib/identity.ts", () => {

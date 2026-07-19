@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { EvergramBot, ModerationAction, Widget, WidgetConfig } from "../../src";
-import { loadOrCreateIdentity } from "../_shared/load-identity";
+import { EvergramBot, ModerationAction, Widget, WidgetConfig } from "../../src/index.js";
+import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const WEBAPP_URL = process.env.EVERGRAM_WEBAPP_URL || "http://localhost:3000";

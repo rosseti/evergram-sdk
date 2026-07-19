@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import nacl from "tweetnacl";
-import { EvergramValidationError } from "./errors";
+import { EvergramValidationError } from "./errors.js";
 
 // Ports the primitives from webapp/app/lib/crypto.ts and
 // webapp/app/ui/providers/EvergramProvider.tsx's chat-key derivation —

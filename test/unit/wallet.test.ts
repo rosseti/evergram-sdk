@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { verifyKeypairSignature } from "xrpl";
-import { buildAuthChallenge, generateWallet, signAuthChallenge, walletFromSeed } from "../../src/wallet";
+import { buildAuthChallenge, generateWallet, signAuthChallenge, walletFromSeed } from "../../src/wallet.js";
 
 // Exercises the exact crypto the gateway's verify-signed-message.ts depends
 // on (xrpl's verifyKeypairSignature), without needing the gateway running —

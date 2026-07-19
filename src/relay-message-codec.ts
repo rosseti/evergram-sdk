@@ -1,4 +1,4 @@
-import { RelayMessageKind as WireRelayMessageKind } from "./proto/evergram";
+import { RelayMessageKind as WireRelayMessageKind } from "./proto/evergram.js";
 
 // Ported from the webapp's app/lib/relay-message-codec.ts — see
 // [[evergram-sdk-relay-duplication]] memory. Keep this file's shape

@@ -1,4 +1,4 @@
-export { EvergramCore } from "./core";
+export { EvergramCore } from "./core.js";
 export type {
   EvergramCoreOptions,
   EvergramDevice,
@@ -18,7 +18,7 @@ export type {
   EvergramVisitorChannelParticipantLeft,
   EvergramVisitorChannelModeChanged,
   EvergramVisitorKicked,
-} from "./core";
+} from "./core.js";
 
 // Widget-visitor chat — see [[evergram-sdk-relay-duplication]] memory.
 // EphemeralRelaySession itself stays internal; only the plain data shapes
@@ -30,34 +30,34 @@ export type {
   EphemeralEditEvent,
   EphemeralRemoveEvent,
   EphemeralModerationState,
-} from "./ephemeral-relay-session";
+} from "./ephemeral-relay-session.js";
 
-export { parseMessageContent, formatMessagePreview } from "./message-content";
+export { parseMessageContent, formatMessagePreview } from "./message-content.js";
 export type {
   MessageContent,
   TextContent,
   AudioContent,
   PaymentRequestContent,
   PaymentReceiptContent,
-} from "./message-content";
+} from "./message-content.js";
 
-export { buildPaymentRequest, buildPaymentReceipt, buildAudioMessage } from "./message-builders";
+export { buildPaymentRequest, buildPaymentReceipt, buildAudioMessage } from "./message-builders.js";
 
-export { EvergramBot } from "./bot";
+export { EvergramBot } from "./bot.js";
 export type {
   JoinRequestHandle,
   ChatRequestHandle,
   GroupInviteHandle,
   EvergramBotOptions,
   VisitorSessionHandle,
-} from "./bot";
+} from "./bot.js";
 
-export { generateWallet, walletFromSeed, buildAuthChallenge, signAuthChallenge } from "./wallet";
-export type { EvergramWallet } from "./wallet";
+export { generateWallet, walletFromSeed, buildAuthChallenge, signAuthChallenge } from "./wallet.js";
+export type { EvergramWallet } from "./wallet.js";
 
-export { generateDeviceKeypair, deriveDeviceId, hexToBytes, bytesToHex } from "./crypto";
+export { generateDeviceKeypair, deriveDeviceId, hexToBytes, bytesToHex } from "./crypto.js";
 
-export { identityKey, parseIdentityKey } from "./identity";
+export { identityKey, parseIdentityKey } from "./identity.js";
 
 export {
   EvergramError,
@@ -71,6 +71,6 @@ export {
   EvergramConnectionError,
   EvergramDeviceRevokedError,
   EvergramRotationError,
-} from "./errors";
+} from "./errors.js";
 
-export * from "./proto/evergram";
+export * from "./proto/evergram.js";

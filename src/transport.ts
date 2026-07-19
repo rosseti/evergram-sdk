@@ -1,7 +1,7 @@
 import WebSocket from "ws";
-import { ClientMessage, ServerMessage } from "./proto/evergram";
-import { EvergramConnectionError } from "./errors";
-import { computeBackoffMs } from "./backoff";
+import { ClientMessage, ServerMessage } from "./proto/evergram.js";
+import { EvergramConnectionError } from "./errors.js";
+import { computeBackoffMs } from "./backoff.js";
 
 export type TransportListener = (msg: ServerMessage) => void;
 

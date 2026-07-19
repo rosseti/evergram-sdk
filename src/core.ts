@@ -17,11 +17,11 @@ import {
   ServerMessage,
   VisitorRoomRequestedEvent,
   WidgetConfig,
-} from "./proto/evergram";
-import { Transport } from "./transport";
-import { TypedEventEmitter } from "./typed-event-emitter";
-import { EvergramWallet, signAuthChallenge } from "./wallet";
-import { identityKey, parseIdentityKey } from "./identity";
+} from "./proto/evergram.js";
+import { Transport } from "./transport.js";
+import { TypedEventEmitter } from "./typed-event-emitter.js";
+import { EvergramWallet, signAuthChallenge } from "./wallet.js";
+import { identityKey, parseIdentityKey } from "./identity.js";
 import {
   decryptMessage,
   deriveDevicePubHex,
@@ -29,7 +29,7 @@ import {
   generateMsgId,
   hexToBytes,
   openSealedSymKey,
-} from "./crypto";
+} from "./crypto.js";
 import {
   EvergramAuthError,
   EvergramNotFoundError,
@@ -37,8 +37,8 @@ import {
   EvergramTimeoutError,
   EvergramValidationError,
   errorFromCode,
-} from "./errors";
-import { MessageContent, parseMessageContent } from "./message-content";
+} from "./errors.js";
+import { MessageContent, parseMessageContent } from "./message-content.js";
 import {
   decryptTextFramePayload,
   EphemeralEditEvent,
@@ -49,8 +49,8 @@ import {
   EphemeralRemoveEvent,
   EphemeralTextEvent,
   EphemeralTypingEvent,
-} from "./ephemeral-relay-session";
-import { decodeRelayPayload, encodeRelayPayload, fromWireKind, RelayMessageKind, toWireKind } from "./relay-message-codec";
+} from "./ephemeral-relay-session.js";
+import { decodeRelayPayload, encodeRelayPayload, fromWireKind, RelayMessageKind, toWireKind } from "./relay-message-codec.js";
 
 // Bounds pendingEnvelopes (see deliverOrQueue) for a chat whose symmetric key
 // never resolves — e.g. chat_key_unsealable below, or any other case where

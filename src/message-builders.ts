@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { bytesToBase64 } from "./crypto";
+import { bytesToBase64 } from "./crypto.js";
 
 export function buildPaymentRequest(params: {
   // Override when the caller must know the id before the async send

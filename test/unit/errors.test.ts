@@ -10,7 +10,7 @@ import {
   EvergramRotationError,
   EvergramValidationError,
   errorFromCode,
-} from "../../src/errors";
+} from "../../src/errors.js";
 
 // Each case here mirrors a real gateway/contract error code (see
 // src/errors.ts's tables) — if a new auth-related code is ever added on the

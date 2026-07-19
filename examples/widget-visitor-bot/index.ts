@@ -1,11 +1,11 @@
 import { join } from "node:path";
-import { bytesToHex, EvergramBot, hexToBytes } from "../../src";
-import { loadOrCreateIdentity } from "../_shared/load-identity";
+import { bytesToHex, EvergramBot, hexToBytes } from "../../src/index.js";
+import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 import {
   loadPersistedVisitorSessions,
   removePersistedVisitorSession,
   savePersistedVisitorSession,
-} from "../_shared/visitor-session-store";
+} from "../_shared/visitor-session-store.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const WEBAPP_URL = process.env.EVERGRAM_WEBAPP_URL || "http://localhost:3000";

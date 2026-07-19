@@ -6,8 +6,8 @@ import {
   EvergramAccessDeniedError,
   EvergramBot,
   identityKey,
-} from "../../src";
-import { loadOrCreateIdentity } from "../_shared/load-identity";
+} from "../../src/index.js";
+import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const PAYWALL_CHAT_ID = process.env.PAYWALL_CHAT_ID;

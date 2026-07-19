@@ -1,4 +1,4 @@
-import { ChainIdentity } from "./proto/evergram";
+import { ChainIdentity } from "./proto/evergram.js";
 
 // Mirrors webapp/app/lib/identity.ts exactly — this string format is the
 // map key the gateway/contract use everywhere (chat participants,

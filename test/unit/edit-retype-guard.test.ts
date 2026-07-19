@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EvergramCore, EvergramDevice } from "../../src/core";
-import { Envelope } from "../../src/proto/evergram";
-import { deriveDeviceId, generateDeviceKeypair, encryptMessage } from "../../src/crypto";
-import { EvergramWallet, generateWallet } from "../../src/wallet";
+import { EvergramCore, EvergramDevice } from "../../src/core.js";
+import { Envelope } from "../../src/proto/evergram.js";
+import { deriveDeviceId, generateDeviceKeypair, encryptMessage } from "../../src/crypto.js";
+import { EvergramWallet, generateWallet } from "../../src/wallet.js";
 
 // Same FakeTransport stand-in as envelope-dedupe.test.ts — EvergramCore's
 // constructor wires up listeners against a live Transport even though none

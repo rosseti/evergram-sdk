@@ -5,10 +5,10 @@ import {
   EvergramMessageDeleted,
   EvergramMessageEdited,
   EvergramReaction,
-} from "../../src/core";
-import { identityKey } from "../../src/identity";
-import { ChainFamily } from "../../src/proto/evergram";
-import { freshIdentity, waitUntil, WS_URL } from "./_helpers";
+} from "../../src/core.js";
+import { identityKey } from "../../src/identity.js";
+import { ChainFamily } from "../../src/proto/evergram.js";
+import { freshIdentity, waitUntil, WS_URL } from "./_helpers.js";
 
 // Requires the local stack up — see sdk/README.md's "Testing" section.
 // Default tier ("early") can create one-on-one chats (chat:create) without

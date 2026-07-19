@@ -7,7 +7,7 @@ import {
   encryptMessage,
   generateDeviceKeypair,
   openSealedSymKey,
-} from "../../src/crypto";
+} from "../../src/crypto.js";
 
 describe("crypto", () => {
   it("generateDeviceKeypair produces 32-byte X25519 keys as hex", () => {

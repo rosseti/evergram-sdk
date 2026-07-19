@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EvergramCore, EvergramDevice } from "../../src/core";
-import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto";
-import { EvergramWallet, generateWallet } from "../../src/wallet";
+import { EvergramCore, EvergramDevice } from "../../src/core.js";
+import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto.js";
+import { EvergramWallet, generateWallet } from "../../src/wallet.js";
 
 // Regression test for a crash where connect()'s auth-failure path did
 // `this.emit("error", err)` with zero real EventEmitter "error" listeners

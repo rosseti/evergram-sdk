@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { EvergramCore, EvergramDevice } from "../../src/core";
-import { Envelope } from "../../src/proto/evergram";
-import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto";
-import { EvergramWallet, generateWallet } from "../../src/wallet";
+import { EvergramCore, EvergramDevice } from "../../src/core.js";
+import { Envelope } from "../../src/proto/evergram.js";
+import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto.js";
+import { EvergramWallet, generateWallet } from "../../src/wallet.js";
 
 // See rotation-retry.test.ts for why this stand-in is needed: EvergramCore's
 // constructor wires up listeners against a live Transport instance even

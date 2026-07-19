@@ -1,7 +1,7 @@
-import { EvergramDevice } from "../../src/core";
-import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto";
-import { ChainFamily, ClientMessage } from "../../src/proto/evergram";
-import { EvergramWallet, generateWallet, signAuthChallenge, walletFromSeed } from "../../src/wallet";
+import { EvergramDevice } from "../../src/core.js";
+import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto.js";
+import { ChainFamily, ClientMessage } from "../../src/proto/evergram.js";
+import { EvergramWallet, generateWallet, signAuthChallenge, walletFromSeed } from "../../src/wallet.js";
 
 // Override with EVERGRAM_TEST_WS_URL if your local stack exposes the
 // gateway somewhere other than the docker-compose.yml default.
