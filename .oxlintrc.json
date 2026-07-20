@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "off",
+    "no-underscore-dangle": "off",
+    "vitest/require-mock-type-parameters": "off",
+    "vitest/expect-expect": "off"
+  },
+  "ignorePatterns": ["dist/**", "src/proto/evergram.ts", "node_modules/**"],
+  "env": {
+    "builtin": true
+  }
+}

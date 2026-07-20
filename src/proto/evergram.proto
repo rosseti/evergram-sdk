@@ -1,0 +1,1662 @@
+syntax = "proto3";
+
+package evergram;
+
+enum ChainFamily {
+  CHAIN_FAMILY_UNSPECIFIED = 0;
+  XRPL                     = 1;
+  EVM                      = 2;
+  BTC                      = 3;
+}
+
+message ChainIdentity {
+  ChainFamily     chain_family = 1;
+  string          address      = 2; // rAddress, 0x..., etc
+  optional string network_id   = 3;
+}
+
+// AuthProof is only valid during bootstrap or sensitive operations.
+// It must NOT be persisted or propagated beyond session boundaries.
+message AuthProof {
+  oneof proof {
+    string             jwt            = 1;
+    SignedMessageProof signed_message = 2;
+    bytes              hp_challenge   = 3;
+  }
+}
+
+// Direct wallet-signature proof (e.g. XRPL), used by headless/programmatic
+// clients (bots, SDK) that have no Xaman session to obtain a jwt from.
+// The signed challenge is "evergram-auth:{address}:{deviceId}:{nonce}",
+// where nonce is the one delivered via AuthChallenge for this connection
+// (see ServerMessage.auth_challenge) — single-use, never reused across
+// connections. The gateway verifies signature_hex against public_key_hex,
+// then confirms the derived address matches ChainIdentity.address.
+message SignedMessageProof {
+  string public_key_hex = 1;
+  string signature_hex  = 2;
+}
+
+// Pushed by the gateway immediately on connection open, before any client
+// message — the nonce a signed_message proof must include in its challenge
+// for THIS connection. Single-use: consumed on the first auth attempt
+// (success or failure); a new connection always gets a fresh one. Ignored
+// by clients using the jwt proof path.
+message AuthChallenge {
+  string nonce = 1;
+}
+
+/* message BootstrapAuthRequest {
+ ChainIdentity identity   = 1;
+ AuthProof     proof      = 2;
+ string        device_id  = 3;
+ bytes         device_pub = 4;
+ } */
+
+message DeviceForceRefresh {
+
+}
+
+message DeviceForceRefreshResponse {
+  ResponseStatus status = 1;
+}
+
+message ClientMessage {
+  oneof payload {
+    Auth                 auth            = 2;
+    CreateChat           create_chat     = 3;
+    RegisterDevice       register_device = 4;
+    GetProfile           get_profile     = 5;
+    QueryChats           query_chats     = 6;
+    Envelope             envelope        = 7; // events: SEND, TYPING, ACK, DELIVERY ...
+    PingPong             ping            = 8;
+    ChangeProfileRequest change_profile  = 9;
+
+    GrantBetaAccess  grant_beta_access = 10;
+    InitiatePurchase initiate_purchase = 11;
+    ClaimPro         claim_pro         = 12;
+    VerifyPurchase   verify_purchase   = 13;
+
+    WatchIdentities   watch_identities   = 14;
+    UnwatchIdentities unwatch_identities = 15;
+
+    Envelope relay_message_envelope = 16;
+
+    RotateChatVersion rotate_chat_version = 17;
+    ClaimBetaAccess   claim_beta_access   = 18;
+
+    LeaveChat  leave_chat  = 19;
+    ReportUser report_user = 20;
+
+    AddParticipantRequest    add_participant    = 21;
+    RemoveParticipantRequest remove_participant = 22;
+    SetChatMode              set_chat_mode      = 23;
+    UpdateChatRoles          update_chat_roles  = 24;
+    DeviceForceRefresh       device_force_refresh = 25;
+    UpgradeContract          upgrade_contract     = 26;
+    GetMetrics               get_metrics          = 27;
+
+    GenerateInviteLink generate_invite_link = 28;
+    RevokeInviteLink   revoke_invite_link   = 29;
+    ResolveInvite      resolve_invite       = 30;
+    RequestJoin        request_join         = 31;
+
+    SetChatDiscoverable set_chat_discoverable = 32;
+    ListPublicChats     list_public_chats     = 33;
+
+    UpdatePrivacySettings update_privacy_settings = 34;
+    AcceptChatRequest     accept_chat_request     = 35;
+    BlockIdentity         block_identity          = 36;
+    UnblockIdentity       unblock_identity        = 37;
+    CheckBlocked          check_blocked           = 38;
+
+    AcceptGroupInvite  accept_group_invite  = 39;
+    DeclineGroupInvite decline_group_invite = 40;
+
+    CreateEphemeralRoom create_ephemeral_room = 41;
+    RelayMessage        relay_message         = 42;
+
+    CreateWidget create_widget = 43;
+    DeleteWidget delete_widget = 44;
+    UpdateWidget update_widget = 45;
+    ListWidgets  list_widgets  = 46;
+    GetWidgetInfo get_widget_info = 47;
+
+    CreateVisitorRoom create_visitor_room = 48;
+
+    RevokeDevice revoke_device = 49;
+    ListDevices  list_devices  = 50;
+
+    DenyJoinRequest deny_join_request = 51;
+
+    SyncHistoryRequest  sync_history_request  = 52;
+    SyncHistoryFetch    sync_history_fetch    = 53;
+    SyncHistoryAccept   sync_history_accept   = 54;
+    SyncHistoryReject   sync_history_reject   = 55;
+    SyncHistoryChunk    sync_history_chunk    = 56;
+    SyncHistoryDone     sync_history_done     = 57;
+
+    UpdateWidgetConfig update_widget_config = 58;
+
+    SubscribePublicChannel subscribe_public_channel = 59;
+
+    ModerateChannel moderate_channel = 60;
+
+    DeclineChatRequest    decline_chat_request     = 61;
+    ListBlockedIdentities list_blocked_identities   = 62;
+  }
+}
+
+message SubscribePublicChannel {
+  string widget_id   = 1;
+  string channel_key = 2; // 64-char hex, from operator's local widgetConfig
+}
+
+message SubscribePublicChannelResponse {
+  ResponseStatus status      = 1;
+  string         room_token  = 2;
+  string         channel_key = 3;
+  // Nicknames already known for this channel's other live subscribers (see
+  // publicChannelRegistry.ts's getChannelParticipantNames) — lets the
+  // caller seed its participants list without waiting for each of them to
+  // send anything. Never includes the caller itself.
+  repeated string participants = 4;
+  // Current moderation state (see publicChannelRegistry.ts's
+  // ModerationSnapshot) — without this, a (re)joining/reconnecting client
+  // has no way to know who's op/voiced or whether the channel is
+  // moderated until the next live ModerateChannel action broadcasts one;
+  // after a reload it would otherwise silently reset to nothing/false.
+  bool            moderated = 5;
+  repeated string ops       = 6;
+  repeated string voiced    = 7;
+  // Echoes the widgetId that was subscribed to, so a caller with several
+  // subscribePublicChannel() calls in flight at once (e.g. an operator bot
+  // managing multiple widgets) can match a response back to the right
+  // request instead of matching whichever resolves first.
+  string          widget_id = 8;
+}
+
+// IRC-style moderation for a public_group channel (see
+// publicChannelRegistry.ts). Every action shares the same auth check (caller
+// must currently be op — see isChannelOp) and the same request/target shape,
+// so this is one combined RPC rather than a message per action.
+enum ModerationAction {
+  MODERATION_KICK           = 0;
+  MODERATION_BAN            = 1;
+  MODERATION_UNBAN          = 2;
+  MODERATION_GRANT_OP       = 3;
+  MODERATION_REVOKE_OP      = 4;
+  MODERATION_GRANT_VOICE    = 5;
+  MODERATION_REVOKE_VOICE   = 6;
+  MODERATION_SET_MODERATED  = 7;
+  MODERATION_UNSET_MODERATED = 8;
+}
+
+message ModerateChannel {
+  string            room_token        = 1;
+  ModerationAction  action            = 2;
+  // Required for KICK/BAN/UNBAN/GRANT_OP/REVOKE_OP/GRANT_VOICE/REVOKE_VOICE
+  // (resolved to a live subscriber by current nickname — see
+  // findSubscriberWsByName); ignored for SET_MODERATED/UNSET_MODERATED.
+  string            target_participant = 3;
+}
+
+message ModerateChannelResponse {
+  ResponseStatus  status     = 1;
+  string          room_token = 2;
+  bool            moderated  = 3;
+  repeated string ops        = 4;
+  repeated string voiced     = 5;
+}
+
+// Anonymous ephemeral side-chat ("magic link"): the link creator is an
+// authenticated identity (this message goes through the normal auth gate +
+// rate limiting below), but the joiner who opens the link is never
+// authenticated — see RelayMessage, which IS exempted from auth, and is the
+// only thing the anonymous side ever sends.
+//
+// The gateway relays RelayMessage as an opaque blob between the two sockets
+// paired on room_token — it never reaches HotPocket/consensus, and the
+// gateway never sees plaintext: payload is nacl.secretbox ciphertext keyed
+// by a secret that lives only in the link's URL fragment, which browsers
+// never send to any server. This was originally a WebRTC P2P data channel
+// with the gateway only relaying SDP/ICE signaling; that needs a TURN relay
+// to work across arbitrary NATs (STUN alone isn't enough — confirmed by
+// hand, not just in theory), which is new infra/cost this feature was
+// explicitly trying to avoid. Relaying the actual (still E2E-encrypted)
+// chat content through the same gateway sidesteps NAT traversal entirely
+// and is also just consistent with how the rest of Evergram's chat already
+// works (sender -> gateway -> recipient, never P2P).
+message CreateEphemeralRoom {
+}
+
+message CreateEphemeralRoomResponse {
+  ResponseStatus status     = 1;
+  string         room_token = 2;
+}
+
+enum RelayMessageKind {
+  // Sent by the anonymous joiner as its first frame for a room_token —
+  // both claims the room's single joiner slot and tells the gateway to
+  // relay it (and only it) to the creator from then on. The creator
+  // receiving this relayed is its cue to flip to "connected" in the UI.
+  RELAY_JOINED = 0;
+  // Content-bearing kinds — payload is always {nonce, ciphertext} JSON
+  // from nacl.secretbox, opaque to the gateway. The plaintext underneath
+  // is itself a small JSON envelope ({msgId, sender, text, ...}) so both
+  // sides can track which message a react/edit/remove targets without the
+  // gateway ever needing to know (it just relays the kind + opaque blob,
+  // same as it already does for TEXT — see relayMessage.ts).
+  RELAY_TEXT   = 1;
+  RELAY_REACT  = 3;
+  RELAY_EDIT   = 4;
+  RELAY_REMOVE = 5;
+  // Gateway-synthesized (never sent by a client) when one side's socket
+  // closes, so the remaining side's UI isn't left guessing — see
+  // ephemeralRoomRegistry.ts. Its payload, when non-empty, is plaintext
+  // JSON ({deadlineAt}) carrying the reconnect grace window's deadline,
+  // not encrypted content.
+  RELAY_LEFT   = 2;
+  // Sent by a previously-paired side reconnecting after a drop (e.g. a
+  // page reload), reusing the same room_token instead of minting a new
+  // one. Only succeeds against a `reclaimable` room (see
+  // ephemeralRoomRegistry.ts's reclaimCreatorSlot) within its reconnect
+  // grace window.
+  RELAY_RECLAIM = 6;
+  // Sent by either side currently holding a slot in the room (the widget
+  // owner or the visitor) to deliberately and permanently close it —
+  // unlike RELAY_LEFT this is not a drop that can be reconnected from;
+  // the room is deleted outright (see ephemeralRoomRegistry.ts's
+  // endRoom).
+  RELAY_END = 7;
+  // Gateway-synthesized (never sent by a client), like RELAY_LEFT — but
+  // sent only to the one socket whose own RELAY_JOINED/RELAY_RECLAIM just
+  // lost a race against another socket that already holds that slot live.
+  // Distinct from "the room is over": the room is fine, just claimed by
+  // someone else (the widget-visitor flow pushes VisitorRoomRequestedEvent
+  // to every device of the owner, but only the first to claim the room
+  // actually gets it — see relayMessage.ts/ephemeralRoomRegistry.ts). Tells
+  // that one socket to give up locally instead of silently sitting in a
+  // session it was never actually paired into.
+  RELAY_CLAIMED_ELSEWHERE = 8;
+  // Sent by either side currently holding a slot in the room, mirroring
+  // TypingContent on the real per-chat Envelope (see handleTyping.ts on the
+  // gateway) — plaintext payload, JSON {isTyping: bool, sender?: string},
+  // not nacl-encrypted like the content kinds above: typing liveness isn't
+  // message content, and the real chat already accepts the gateway seeing
+  // it in the clear. `sender` is public_group-only (a channel has more than
+  // one other party to attribute the signal to); 1:1 rooms omit it. Relayed
+  // through the exact same opaque kind+payload path as every other frame
+  // (see relayMessage.ts) — no gateway changes needed to support it.
+  RELAY_TYPING = 9;
+  // public_group-only presence, deliberately distinct from RELAY_JOINED/
+  // RELAY_LEFT: those two pair/unpair a 1:1 room's single peer and flip
+  // EphemeralRelaySession's connectionStatus (open/peer_left) — reusing
+  // them for a shared channel would wrongly flip the whole channel to
+  // "peer_left" every time any one of N participants disconnects. Sent by
+  // a visitor's client right after joining a channel; payload is plaintext
+  // JSON {sender}, like RELAY_TYPING — presence, not message content — so
+  // the gateway may read (but never modify) it to learn the connection's
+  // nickname for publicChannelRegistry.ts's participant tracking.
+  RELAY_CHANNEL_JOIN = 10;
+  // Gateway-synthesized (never sent by a client), mirroring RELAY_LEFT's
+  // "gateway announces a drop" pattern but scoped to one participant of a
+  // shared channel rather than a 1:1 room's only peer. Plaintext payload
+  // {sender}, same shape as RELAY_CHANNEL_JOIN.
+  RELAY_CHANNEL_PART = 11;
+  // Gateway-synthesized (never sent by a client), targeted at exactly the
+  // ejected connection only (not broadcast) — sent right before the
+  // gateway closes that socket in response to a ModerateChannel KICK or
+  // BAN action (see moderateChannel.ts). Plaintext payload {reason:
+  // "kicked"|"banned"}; the client treats this like RELAY_END/
+  // RELAY_CLAIMED_ELSEWHERE — final, no reconnect.
+  RELAY_CHANNEL_KICKED = 12;
+  // Gateway-synthesized (never sent by a client), broadcast to every
+  // remaining channel subscriber after any ModerateChannel action
+  // succeeds — plaintext payload is a fresh state snapshot, {moderated:
+  // bool, ops: string[], voiced: string[]} (participant names, same
+  // identity model as RELAY_CHANNEL_JOIN — presence, not content).
+  RELAY_CHANNEL_MODE = 13;
+}
+
+message RelayMessage {
+  string           room_token = 1;
+  RelayMessageKind kind       = 2;
+  bytes            payload    = 3;
+}
+
+// Embeddable chat widget: a Widget is a revocable, opaque public
+// identifier (widget_id) that resolves to an owning identity + its
+// devices, so an anonymous website visitor can reach that identity
+// without ever seeing or addressing it directly. owner_identity_key is
+// fixed at creation — there is no transfer-ownership operation. Deleting
+// a widget is a soft delete (the `deleted` flag): widget_id is retired
+// forever, never reissued, and the owner's ListWidgets history is kept.
+message Widget {
+  string widget_id      = 1;
+  string name           = 2;
+  bool   enabled        = 3;
+  bool   deleted        = 4;
+  int64  widget_version = 5;
+  int64  created_at     = 6;
+  WidgetConfig config   = 7; // present when the owner's own ListWidgets response includes stored config (e.g. for public_group key recovery)
+}
+
+message CreateWidget {
+  string name = 1;
+}
+
+message CreateWidgetResponse {
+  ResponseStatus status = 1;
+  Widget         widget = 2;
+}
+
+message DeleteWidget {
+  string widget_id = 1;
+}
+
+message DeleteWidgetResponse {
+  ResponseStatus status    = 1;
+  string         widget_id = 2;
+}
+
+message UpdateWidget {
+  string        widget_id = 1;
+  optional bool enabled   = 2;
+}
+
+message UpdateWidgetResponse {
+  ResponseStatus status = 1;
+  Widget         widget = 2;
+}
+
+message ListWidgets {
+}
+
+message ListWidgetsResponse {
+  ResponseStatus  status  = 1;
+  repeated Widget widgets = 2;
+}
+
+// The ONLY message in this protocol answerable with no `authorization` at
+// all — the gateway calls this on behalf of an anonymous widget visitor
+// who has no session. Must never act as an existence/enumeration oracle:
+// an unknown, disabled, or deleted widget_id all return the exact same
+// { enabled: false, devices: [] } shape. owner_identity_key is consumed
+// only by the gateway internally (to find live device sockets and seal
+// the room key) — it is never relayed onward to the visitor.
+message GetWidgetInfo {
+  string widget_id = 1;
+}
+
+message GetWidgetInfoResponse {
+  ResponseStatus  status             = 1;
+  bool            enabled            = 2;
+  string          owner_identity_key = 3;
+  repeated Device devices            = 4;
+  WidgetConfig    config             = 5;
+  // Echoes the widgetId that was queried, so a caller with several
+  // getWidgetInfo() calls in flight at once can match a response back to
+  // the right request instead of matching whichever resolves first.
+  string          widget_id          = 6;
+}
+
+// Anonymous visitor -> gateway: addresses a widget, never an identity
+// directly. sym_key is generated client-side by the visitor; the gateway
+// sees it in plaintext for only as long as it takes to seal it per-device
+// via encryptSymKeyForDevices (the same thing it already does for normal
+// chat key distribution — this is not a new exception to any rule).
+// first_message_payload is the visitor's first message, already encrypted
+// with sym_key in the same envelope shape as a normal RELAY_TEXT payload —
+// the gateway only ever carries it, never decrypts it. No room is created
+// just by opening the widget; this message (and the room it creates) only
+// ever exists because the visitor actually sent something.
+message CreateVisitorRoom {
+  string widget_id             = 1;
+  bytes  sym_key                = 2;
+  string visitor_label         = 3;
+  bytes  first_message_payload = 4;
+}
+
+message WidgetConfig {
+  string primary_color     = 1;
+  string logo_url          = 2;
+  string welcome_message   = 3;
+  string input_placeholder = 4;
+  string agent_name        = 5;
+  string position          = 6; // "bottom-right" | "bottom-left"
+  string mode              = 7; // "private_chat" | "public_group"
+  string channel_key       = 8; // 64-char hex (32 bytes); only present in public_group
+}
+
+message UpdateWidgetConfig {
+  string       widget_id = 1;
+  WidgetConfig config    = 2;
+}
+
+message UpdateWidgetConfigResponse {
+  ResponseStatus status    = 1;
+  // Echoes the widgetId that was updated, so a caller with several
+  // updateWidgetConfig() calls in flight at once can match a response back
+  // to the right request instead of matching whichever resolves first.
+  string         widget_id = 2;
+}
+
+message CreateVisitorRoomResponse {
+  ResponseStatus status     = 1;
+  string         room_token = 2;
+  WidgetConfig   config     = 3;
+  // public_group only — see SubscribePublicChannelResponse.participants.
+  // Always empty for private_chat.
+  repeated string participants = 4;
+  // public_group only — see SubscribePublicChannelResponse.moderated/
+  // ops/voiced. Always false/empty for private_chat.
+  bool            moderated = 5;
+  repeated string ops       = 6;
+  repeated string voiced    = 7;
+}
+
+// Server -> client push, sent to every open device socket of the widget's
+// resolved owner. sealed_key_by_device carries one sealed copy of sym_key
+// per device (each device decrypts with its own private key); widget_id
+// lets the owner's UI show which widget the conversation came in on
+// without duplicating its name into every event.
+message SealedKeyForDevice {
+  string ciphertext       = 1;
+  string nonce            = 2;
+  string ephemeral_pubkey = 3;
+}
+
+message VisitorRoomRequestedEvent {
+  string                           room_token            = 1;
+  string                           widget_id              = 2;
+  string                           visitor_label          = 3;
+  string                           origin                 = 4;
+  int64                            ts                     = 5;
+  map<string, SealedKeyForDevice>  sealed_key_by_device   = 6;
+  bytes                            first_message_payload  = 7;
+}
+
+// Pushed to the visitor if a room they created is never claimed (the
+// owner had a device online at creation time but it disconnected before
+// joining — the common "owner offline" case is rejected synchronously,
+// before any room exists, so this only covers that rarer race).
+message VisitorRoomTimedOutEvent {
+  string room_token = 1;
+}
+
+message SetChatMode {
+  string chat_id   = 1;
+  bool   moderated = 2;
+}
+
+message SetChatModeResponse {
+  ResponseStatus status = 1;
+
+  string chat_id      = 2;
+  uint64 chat_version = 3;
+}
+
+message ClaimBetaAccess {
+
+}
+message ClaimBetaAccessResponse {
+  ResponseStatus status = 1;
+  int64          ts     = 2;
+}
+
+message AddParticipantRequest {
+  string                      chat_id           = 1;
+  string                      remote_identity   = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+  // The caller's last-known chat_version, same role as RotateChatVersion's
+  // field of the same name: the contract rejects a stale value with a
+  // conflict code instead of letting this write's symKeyEncrypted silently
+  // clobber a concurrent membership change's.
+  uint64                      expected_version  = 4;
+}
+
+message RemoveParticipantRequest {
+  string                      chat_id           = 1;
+  string                      remote_identity   = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+  // See AddParticipantRequest.expected_version.
+  uint64                      expected_version  = 4;
+}
+
+message AddParticipantResponse {
+  ResponseStatus status = 1;
+
+  string chat_id         = 2;
+  string remote_identity = 3;
+
+  uint64 chat_version = 4;
+}
+
+message RemoveParticipantResponse {
+  ResponseStatus status = 1;
+
+  string chat_id         = 2;
+  string remote_identity = 3;
+
+  uint64 chat_version = 4;
+}
+
+message GenerateInviteLink {
+  string         chat_id    = 1;
+  optional int64 expires_at = 2; // unix ms, 0/unset = never expires
+  optional int32 max_uses   = 3; // 0/unset = unlimited
+}
+
+message GenerateInviteLinkResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  string         invite_code  = 3;
+  uint64         chat_version = 4;
+}
+
+message RevokeInviteLink {
+  string chat_id = 1;
+}
+
+message RevokeInviteLinkResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  uint64         chat_version = 3;
+}
+
+message ResolveInvite {
+  string invite_code = 1;
+}
+
+message ResolveInviteResponse {
+  ResponseStatus status            = 1;
+  string         chat_id           = 2;
+  string         name              = 3;
+  int32          member_count      = 4;
+  bool           already_member    = 5;
+  bool           already_requested = 6;
+  // Echoes the invite code that was resolved, so a caller with several
+  // resolveInvite() calls in flight at once can match a response back to
+  // the right request instead of matching whichever resolves first.
+  string         invite_code       = 7;
+}
+
+message RequestJoin {
+  string invite_code = 1;
+}
+
+message RequestJoinResponse {
+  ResponseStatus  status            = 1;
+  string          chat_id           = 2;
+  bool            already_member    = 3;
+  bool            already_requested = 4;
+  string          name              = 5;
+  repeated string admins            = 6;
+  repeated string moderators        = 7;
+  // Echoes the invite code that was requested — same rationale as
+  // ResolveInviteResponse.invite_code above.
+  string          invite_code       = 8;
+}
+
+message DenyJoinRequest {
+  string chat_id        = 1;
+  string remote_identity = 2;
+}
+
+message DenyJoinResponse {
+  ResponseStatus status          = 1;
+  string         chat_id         = 2;
+  string         remote_identity = 3;
+  string         name            = 4; // group name, for the requester notification
+}
+
+// Server -> client push, sent to a group's admins/moderators when someone
+// requests to join via invite link.
+message JoinRequestedEvent {
+  string chat_id  = 1;
+  string identity = 2;
+  string name     = 3; // group name, for notification copy
+  int64  ts       = 4;
+}
+
+// Server -> client push, sent to the requester when an admin/moderator denies
+// their join request.
+message JoinDeniedEvent {
+  string chat_id = 1;
+  string name    = 2; // group name, for notification copy
+}
+
+message SetChatDiscoverable {
+  string chat_id      = 1;
+  bool   discoverable = 2;
+  string category     = 3; // required when discoverable=true; ignored otherwise
+}
+
+message SetChatDiscoverableResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  bool           discoverable = 3;
+  string         category     = 4;
+  uint64         chat_version = 5;
+}
+
+message ListPublicChats {
+  string category = 1; // empty = all categories
+}
+
+message PublicChatPreview {
+  string chat_id      = 1;
+  string name         = 2;
+  int32  member_count = 3;
+  string category     = 4;
+  string invite_code  = 5;
+}
+
+message ListPublicChatsResponse {
+  ResponseStatus             status   = 1;
+  repeated PublicChatPreview chats    = 2;
+  // Echoes the category that was queried (empty = all categories), so a
+  // caller with several listPublicChats() calls in flight for different
+  // categories can match a response back to the right request.
+  string                     category = 3;
+}
+
+message ServerMessage {
+  oneof payload {
+    AuthResponse           auth_response            = 1;
+    RegisterDeviceResponse register_device_response = 2;
+    CreateChatResponse     create_chat_response     = 3;
+    QueryChatsResponse     query_chats_response     = 5;
+    Error                  error                    = 6;
+    Envelope               envelope                 = 7; // events: SEND, TYPING, ACK, DELIVERY ...
+    PingPong               pong                     = 8;
+    ChangeProfileResponse  change_profile_response  = 9;
+    ProfileUpdatedEvent    profile_updated          = 10;
+    GetProfileResponse     get_profile_response     = 11;
+
+    GrantBetaAccessResponse grant_beta_access_response = 12;
+
+    InitiatePurchaseResponse initiate_purchase_response = 13;
+    ClaimProResponse         claim_pro_response         = 14;
+    VerifyPurchaseResponse   verify_purchase_response   = 15;
+
+    AccountPresence      account_presence       = 16;
+    AccountAccessUpdated account_access_updated = 17;
+
+    GetDevicePublicKeysByIdentities get_device_public_keys_by_identities = 18;
+
+    RotateChatVersionResponse rotate_chat_version_response = 19;
+    ClaimBetaAccessResponse   claim_beta_access_response   = 20;
+
+    LeaveChatResponse leave_chat_response = 21;
+
+    ReputationUpdated  reputation_updated   = 22;
+    ReportUserResponse report_user_response = 23;
+
+    AddParticipantResponse    add_participant_response    = 24;
+    RemoveParticipantResponse remove_participant_response = 25;
+    SetChatModeResponse       set_chat_mode_response      = 26;
+
+    UpdateChatRolesResponse update_chat_roles_response = 27;
+
+    DeviceForceRefreshResponse device_force_refresh_response = 28;
+    UpgradeContractResponse    upgrade_contract_response    = 29;
+    MetricsResponse            metrics_response             = 30;
+
+    GenerateInviteLinkResponse generate_invite_link_response = 31;
+    RevokeInviteLinkResponse   revoke_invite_link_response   = 32;
+    ResolveInviteResponse      resolve_invite_response       = 33;
+    RequestJoinResponse        request_join_response         = 34;
+    JoinRequestedEvent         join_requested_event           = 35;
+
+    SetChatDiscoverableResponse set_chat_discoverable_response = 36;
+    ListPublicChatsResponse     list_public_chats_response      = 37;
+
+    AuthChallenge auth_challenge = 38;
+
+    UpdatePrivacySettingsResponse update_privacy_settings_response = 39;
+    AcceptChatRequestResponse     accept_chat_request_response     = 40;
+    BlockIdentityResponse         block_identity_response          = 41;
+    UnblockIdentityResponse       unblock_identity_response        = 42;
+    ChatRequestReceivedEvent      chat_request_received            = 43;
+    CheckBlockedResponse          check_blocked_response           = 44;
+
+    AcceptGroupInviteResponse  accept_group_invite_response  = 45;
+    DeclineGroupInviteResponse decline_group_invite_response = 46;
+    GroupInviteReceivedEvent   group_invite_received         = 47;
+
+    CreateEphemeralRoomResponse create_ephemeral_room_response = 48;
+    RelayMessage                relay_message                  = 49;
+
+    CreateWidgetResponse  create_widget_response  = 50;
+    DeleteWidgetResponse  delete_widget_response  = 51;
+    UpdateWidgetResponse  update_widget_response  = 52;
+    ListWidgetsResponse   list_widgets_response   = 53;
+    GetWidgetInfoResponse get_widget_info_response = 54;
+
+    CreateVisitorRoomResponse  create_visitor_room_response   = 55;
+    VisitorRoomRequestedEvent  visitor_room_requested_event   = 56;
+    VisitorRoomTimedOutEvent   visitor_room_timed_out_event   = 57;
+
+    RevokeDeviceResponse revoke_device_response = 58;
+    ListDevicesResponse  list_devices_response   = 59;
+
+    DenyJoinResponse deny_join_response = 60;
+
+    JoinDeniedEvent join_denied_event = 61;
+
+    SyncHistoryRequest  sync_history_request  = 62;
+    SyncHistoryFetch    sync_history_fetch    = 63;
+    SyncHistoryAccept   sync_history_accept   = 64;
+    SyncHistoryReject   sync_history_reject   = 65;
+    SyncHistoryChunk    sync_history_chunk    = 66;
+    SyncHistoryDone     sync_history_done     = 67;
+
+    UpdateWidgetConfigResponse update_widget_config_response = 68;
+
+    SubscribePublicChannelResponse subscribe_public_channel_response = 69;
+
+    ModerateChannelResponse moderate_channel_response = 70;
+
+    DeclineChatRequestResponse    decline_chat_request_response     = 71;
+    ListBlockedIdentitiesResponse list_blocked_identities_response  = 72;
+  }
+}
+
+message GetDevicePublicKeysByIdentities {
+  repeated string remote_identities = 1;
+}
+
+message GetDevicePublicKeysByIdentitiesResponse {
+
+  message IdentityDevices {
+    repeated Device devices = 1;
+  }
+
+  ResponseStatus status = 1;
+
+  map<string, IdentityDevices> result = 2;
+}
+
+message RotateChatVersion {
+  string                      chat_id           = 1;
+  string                      account           = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+  // The caller's last-known chat_version. The contract rejects a stale value
+  // with "rotation_conflict" instead of silently overwriting a concurrent
+  // rotation's key.
+  uint64                      expected_version  = 4;
+}
+
+message RotateChatVersionResponse {
+  ResponseStatus status = 1;
+  ChatInfo       chat   = 4;
+}
+
+message Envelope {
+  string          type         = 1; // "SEND", "ACK", "TYPING", "DELIVERY", "REACT", "EDIT"
+  Device          device       = 2;
+  string          chat_id      = 3;
+  string          sender       = 4; // sender identity key
+  repeated string participants = 5;
+  int64           ts           = 6;
+
+  oneof content {
+    SendContent           send     = 7;
+    TypingContent         typing   = 8;
+    AckContent            ack      = 9;
+    DeliveryStatusContent delivery = 10;
+    ReactContent          react    = 11;
+    EditContent           edit     = 12;
+  }
+}
+
+message SendContent {
+  string msg_id          = 1;
+  string ciphertext      = 2;
+  string nonce           = 3;
+  string reply_to_msg_id = 4; // plaintext ref to the message being replied to, like ReactContent/EditContent.msg_id; empty = not a reply
+}
+
+message TypingContent {
+  bool is_typing = 1;
+}
+
+message AckContent {
+  string event_type     = 1; // SEND, TYPING, DELIVERY, REACT, EDIT
+  string related_msg_id = 2;
+}
+
+message DeliveryStatusContent {
+  string         msg_id     = 1;
+  ResponseStatus status     = 2;
+  int64          ts         = 3;
+  // "SEND" (default/empty = legacy SEND), "REACT", "EDIT" — lets the client
+  // tell "the original message failed to send" apart from "a later
+  // react/edit/delete attempt on it was rejected", which need very
+  // different UI handling (the former marks the message failed; the
+  // latter must NOT touch the original message's delivery status at all).
+  string         event_type = 4;
+}
+
+message ReactContent {
+  string msg_id     = 1; // target message being reacted to (plaintext ref, like AckContent.related_msg_id)
+  string ciphertext = 2; // encrypted emoji (same encryptMessage/decryptMessage as SendContent)
+  string nonce      = 3;
+  bool   removed    = 4; // true = remove my reaction from this message
+}
+
+// Covers both "edit" and "delete for everyone" — delete is just an edit with
+// removed=true and an empty/ignored ciphertext. Reuses the same transport,
+// authorization (recentSends ownership+window check) and fan-out as edit;
+// only the client-side rendering differs (tombstone vs. new text).
+message EditContent {
+  string msg_id     = 1; // target message being edited or removed
+  string ciphertext = 2; // new encrypted body; ignored when removed=true
+  string nonce      = 3;
+  int64  edited_at  = 4;
+  bool   removed    = 5; // true = "delete for everyone" tombstone
+}
+
+message Device {
+  string device_id      = 1;
+  string device_pub_hex = 2;
+
+  // Populated only in device-listing responses (RegisterDeviceResponse.devices,
+  // ListDevicesResponse.devices) — empty/zero on every other use of this
+  // message (Envelope.device, Auth.device, etc.), which always describe the
+  // calling connection's own current device.
+  string status            = 3; // "registered" | "revoked"
+  int64  revoked_at        = 4;
+  uint64 revocation_epoch  = 5;
+  int64  last_seen_at      = 6;
+
+  // platform: client self-declared (e.g. "Chrome · Ubuntu", "Terminal").
+  // Input on Auth/RegisterDevice.device; echoed back on every response.
+  string platform = 7;
+}
+
+message RegisterDevice {
+  ChainIdentity identity = 1;
+  Device        device   = 2;
+  AuthProof     proof    = 3;
+}
+
+message RegisterDeviceResponse {
+  ResponseStatus    status           = 1;
+  string            account          = 2;
+  string            device_id        = 3;
+  repeated Device   devices          = 4;
+  repeated ChatInfo rotated_sym_keys = 5;
+}
+
+// Read-only refresh of the caller's own device list — lets the UI re-list
+// right after a revoke without going through registerDevice again.
+message ListDevices {
+}
+
+message ListDevicesResponse {
+  ResponseStatus  status  = 1;
+  repeated Device devices = 2;
+}
+
+message RevokeDevice {
+  string device_id = 1;
+}
+
+message RevokeDeviceResponse {
+  ResponseStatus status           = 1;
+  string         device_id        = 2;
+  uint64         revocation_epoch = 3;
+}
+
+message Auth {
+  ChainIdentity identity = 1;
+  AuthProof     proof    = 2;
+  Device        device   = 3;
+}
+
+message AccessInfo {
+  string          tier         = 1;
+  bool            is_admin     = 2;
+  repeated string capabilities = 3;
+  int64           joined_at    = 4;
+  string          invited_by   = 5;
+
+  repeated Subscription subscriptions = 6;
+  bool                  is_restricted = 7;
+
+  // From access.config.json's per-tier limits.devices — absent means no
+  // limit is enforced (e.g. admin's "*": null tier config), not zero.
+  optional int64 max_devices = 8;
+}
+
+message AuthResponse {
+  ChainIdentity  identity       = 1;
+  Device         device         = 2;
+  int64          ts             = 3;
+  ResponseStatus status         = 4;
+  AccessInfo     access         = 5;
+  Profile        profile        = 6;
+  string         profile_status = 7;
+
+  message Pending {
+    bool          beta                    = 1;
+    optional bool device_refresh_required = 2;
+  }
+
+  optional Pending pending = 8;
+
+  PrivacySettings settings = 9;
+}
+
+message CreateChat {
+  string                      type              = 1; // "one-on-one" | "group"
+  repeated string             participants      = 2;
+  Meta                        meta              = 3;
+  Device                      device            = 4;
+  map<string, AccountSymKeys> sym_key_encrypted = 5;
+}
+
+message Meta {
+  message Roles {
+    repeated string admins     = 1;
+    repeated string moderators = 2;
+    repeated string banned     = 3;
+  }
+
+  message Modes {
+    bool   moderated         = 1;
+    bool   invite_enabled    = 2;
+    string invite_code       = 3;
+    int64  invite_expires_at = 4; // 0 = never expires
+    int32  invite_max_uses   = 5; // 0 = unlimited
+    int32  invite_use_count  = 6;
+    bool   discoverable      = 7;
+    string category          = 8; // one of a fixed server-side allowlist; set only when discoverable
+  }
+
+  string name  = 1;
+  Roles  roles = 2;
+  Modes  modes = 3;
+}
+
+message CreateChatResponse {
+  ChatInfo       chat   = 1;
+  ResponseStatus status = 2;
+
+  // Group creation only: invitees skipped because they require chat
+  // approval — a PendingGroupInvite was queued for each instead of adding
+  // them to chat.participants immediately.
+  repeated string pending_invitees = 3;
+}
+
+message ChatInfo {
+  string          type         = 1; // "one-on-one" | "group"
+  int64           chat_version = 2;
+  repeated string participants = 3;
+  optional Meta   meta         = 4;
+  string          chat_id      = 5;
+  string          created_by   = 6;
+  int64           created_at   = 7;
+
+  map<string, AccountSymKeys> sym_key_encrypted = 8;
+
+  repeated string pending_join_requests = 9;
+
+  // Raw epoch numbers, not a precomputed boolean — a boolean can't express
+  // "how far behind", these can. needsRekey = current_key_epoch <
+  // required_key_epoch is derived client-side. See contract's
+  // handleGetChat/queryChats and the device-revocation design doc.
+  uint64 current_key_epoch  = 10;
+  uint64 required_key_epoch = 11;
+
+  // Bumped by metadata-only mutations (moderation toggle, invite link,
+  // discoverable, requestJoin, leaveChat) that don't touch sym_key_encrypted.
+  // Kept separate from chat_version so those mutations never trigger a
+  // spurious key-rotation prompt on devices that already hold the current key.
+  int64 meta_version = 12;
+}
+
+message AccountSymKeys {
+  // deviceId -> SymKeyEncrypted
+  map<string, SymKeyEncrypted> devices = 1;
+}
+
+// Sent by the recipient of a pending chat request to accept it and
+// materialize the one-on-one chat. Mirrors CreateChat's key-exchange shape.
+message AcceptChatRequest {
+  string                      from_identity     = 1;
+  Meta                        meta              = 2;
+  map<string, AccountSymKeys> sym_key_encrypted = 3;
+}
+
+message AcceptChatRequestResponse {
+  ResponseStatus status = 1;
+  ChatInfo       chat   = 2;
+}
+
+message PendingChatRequest {
+  string from_identity = 1;
+  Meta   meta          = 2;
+  int64  requested_at  = 3;
+}
+
+// Server -> client push when a CreateChat from another identity is queued
+// for approval instead of materializing immediately (see ResponseStatus.code
+// "pending_approval" on CreateChatResponse).
+message ChatRequestReceivedEvent {
+  PendingChatRequest request = 1;
+}
+
+message SymKeyEncrypted {
+  string ephemeral_pubkey = 1;
+  string ciphertext       = 2;
+  string nonce            = 3;
+}
+
+message GetProfile {
+  ChainIdentity remote_identity = 1;
+}
+
+message EncryptedKey {
+  string nonce      = 1;
+  string ciphertext = 2;
+}
+
+message QueryChats {
+  map<string, uint32> known_versions      = 2;
+  map<string, uint32> known_meta_versions = 3;
+}
+
+message ChatSyncResult {
+  string chat_id = 1;
+
+  enum Status {
+    UP_TO_DATE = 0;
+    OUTDATED   = 1;
+    MISSING    = 2;
+  }
+
+  Status status = 2;
+
+  ChatInfo chat                = 3;
+  uint32   server_version      = 4;
+  uint32   server_meta_version = 5;
+}
+
+message QueryChatsResponse {
+  ResponseStatus              status                = 1;
+  string                      account               = 2;
+  repeated ChatSyncResult     results               = 3;
+  repeated PendingChatRequest pending_chat_requests = 4;
+  repeated PendingGroupInvite pending_group_invites = 5;
+}
+
+message ResponseStatus {
+  bool   ok      = 1;
+  string code    = 2;
+  string message = 3;
+}
+
+message Error {
+  string type       = 1;
+  string code       = 2;
+  string message    = 3;
+  string room_token = 4;
+}
+
+message PingPong {
+  string id = 1;
+  int64  ts = 2;
+}
+
+message Profile {
+  ChainIdentity identity   = 1;
+  string        nickname   = 2;
+  string        avatar_url = 3;
+  string        bio        = 4;
+  int64         updated_at = 5;
+  bool          is_admin   = 6;
+}
+
+message ChangeProfileRequest {
+  string nickname   = 1;
+  string avatar_url = 2;
+  string bio        = 3;
+}
+
+message ChangeProfileResponse {
+  ResponseStatus status  = 1;
+  Profile        profile = 2;
+}
+
+message ProfileUpdatedEvent {
+  Profile profile = 1;
+}
+
+// Opt-in gate requiring explicit approval before a 1:1 chat materializes.
+message UpdatePrivacySettings {
+  optional bool require_chat_approval = 1;
+}
+
+message PrivacySettings {
+  bool  require_chat_approval = 1;
+  int64 updated_at            = 2;
+}
+
+message UpdatePrivacySettingsResponse {
+  ResponseStatus  status   = 1;
+  PrivacySettings settings = 2;
+}
+
+// Blocks/unblocks an identity from initiating or continuing a 1:1
+// conversation. Identity-indexed (not chat-indexed): also used to reject a
+// pending chat request, and enforced by the gateway on message delivery for
+// chats that were already accepted.
+message BlockIdentity {
+  string target_identity = 1;
+}
+
+message BlockIdentityResponse {
+  ResponseStatus status          = 1;
+  string         target_identity = 2;
+}
+
+message UnblockIdentity {
+  string target_identity = 1;
+}
+
+message UnblockIdentityResponse {
+  ResponseStatus status          = 1;
+  string         target_identity = 2;
+}
+
+// Gateway-only query used to enforce blocking on message delivery for chats
+// that were already accepted (the contract never routes messages through
+// consensus, so this check happens out-of-band, not on the send path
+// itself). The caller must be either owner_identity or sender_identity —
+// nobody else may probe a block relationship they aren't a party to.
+message CheckBlocked {
+  string owner_identity  = 1; // whose rejectedSenders list to check
+  string sender_identity = 2; // the identity being checked against it
+}
+
+// Declines this one pending chat request only — does not block the sender
+// (use BlockIdentity separately for that). Mirrors DeclineGroupInvite.
+message DeclineChatRequest {
+  string from_identity = 1;
+}
+
+message DeclineChatRequestResponse {
+  ResponseStatus status        = 1;
+  string         from_identity = 2;
+  // Set only by the gateway when relaying this response to the original
+  // requester's own devices (see declineChatRequestResponse.ts) — the
+  // contract never populates this. from_identity on that same push is the
+  // requester's own identity (matches the decliner's _sendAndWaitResponse
+  // matcher), which can't also double as "who declined" once a requester
+  // has more than one outstanding sent request.
+  string         declined_by   = 3;
+}
+
+// Lists the caller's own rejectedSenders/* entries (identities blocked via
+// BlockIdentity). Used to power the Settings > Blocked Users screen.
+message ListBlockedIdentities {
+}
+
+message BlockedIdentityEntry {
+  string target_identity = 1;
+  int64  blocked_at      = 2;
+}
+
+message ListBlockedIdentitiesResponse {
+  ResponseStatus                status  = 1;
+  repeated BlockedIdentityEntry blocked = 2;
+}
+
+// Group equivalent of AcceptChatRequest/BlockIdentity: when requireChatApproval
+// is set, AddParticipantResponse.status.code "pending_approval" means the
+// contract queued a PendingGroupInvite (users/{invitee}/pendingGroupInvites/{chatId})
+// instead of adding the participant immediately. Keyed by chatId, not by
+// inviter, since the same admin can invite the same person to several
+// groups at once — unlike a 1:1 chat request, which is unique per sender.
+message AcceptGroupInvite {
+  string                      chat_id           = 1;
+  map<string, AccountSymKeys> sym_key_encrypted = 2;
+  // See AddParticipantRequest.expected_version — handleAcceptGroupInvite
+  // mutates this same chat's symKeyEncrypted, so it needs the same
+  // staleness guard.
+  uint64                      expected_version  = 3;
+}
+
+message AcceptGroupInviteResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  uint64         chat_version = 3;
+}
+
+// Declines this one invite only — does not block the inviter (use
+// BlockIdentity separately for that).
+message DeclineGroupInvite {
+  string chat_id = 1;
+}
+
+message DeclineGroupInviteResponse {
+  ResponseStatus status  = 1;
+  string         chat_id = 2;
+}
+
+message PendingGroupInvite {
+  string chat_id    = 1;
+  string invited_by = 2;
+  Meta   meta       = 3;
+  int64  invited_at = 4;
+}
+
+message GroupInviteReceivedEvent {
+  PendingGroupInvite invite = 1;
+}
+
+message CheckBlockedResponse {
+  ResponseStatus status  = 1;
+  bool           blocked = 2;
+}
+
+message GetProfileResponse {
+  ResponseStatus status          = 1;
+  Profile        profile         = 2;
+  // Echoes the identity that was queried, so a caller can resolve the
+  // matching profileWaiters entry even when status.ok is false (profile not
+  // found has no Profile to read an identity back out of otherwise).
+  ChainIdentity  remote_identity = 3;
+}
+
+message GrantBetaAccess {
+  ChainIdentity remote_identity = 1;
+}
+
+message GrantBetaAccessResponse {
+  ResponseStatus status          = 1;
+  ChainIdentity  invited_account = 2;
+  ChainIdentity  invited_by      = 3;
+  int64          ts              = 4;
+}
+
+// PRO subscription management
+message InitiatePurchase {
+  string account = 1;
+  string plan    = 2; // "pro"
+
+  optional string pro_observation_jwt = 3;
+}
+
+message PaymentTxn {
+  string TransactionType = 1;
+  string Destination     = 2;
+  string Amount          = 3;
+
+  message HookParameterWrapper {
+    message HookParameterData {
+      string HookParameterName  = 1;
+      string HookParameterValue = 2;
+    }
+    HookParameterData HookParameter = 1;
+  }
+  repeated HookParameterWrapper HookParameters = 4;
+
+  message MemoWrapper {
+    message MemoData {
+      string MemoData   = 1;
+      string MemoType   = 2;
+      string MemoFormat = 3;
+    }
+    MemoData Memo = 1;
+  }
+  repeated MemoWrapper Memos = 5;
+}
+
+message InitiatePurchaseResponse {
+  ResponseStatus status = 1;
+
+  optional string     intent_id = 2;
+  optional PaymentTxn payment   = 3;
+
+  optional Subscription   subscription    = 4;
+  optional ExistingIntent existing_intent = 5;
+
+  optional AlreadySubscribedInfo already_subscribed = 6;
+}
+
+message AlreadySubscribedInfo {
+  int64  expires_at     = 1;
+  int32  days_remaining = 2;
+  string token_id       = 3;
+  int64  issued_at      = 4;
+  string source         = 5; // "manual", "auto_activation", "gift", etc.
+}
+
+message ExistingIntent {
+  string     intent_id  = 1;
+  int64      created_at = 2;
+  int64      expires_at = 3;
+  string     plan       = 4;
+  PaymentTxn payment    = 5;
+}
+
+message ClaimPro {
+  string account = 1;
+}
+
+message ClaimProResponse {
+  ResponseStatus status       = 1;
+  Subscription   subscription = 2;
+}
+
+message VerifyPurchase {
+  string          intent_id           = 1;
+  optional string tx_hash             = 2;
+  optional string pro_observation_jwt = 3;
+}
+
+message VerifyPurchaseResponse {
+  ResponseStatus status       = 1;
+  Subscription   subscription = 2;
+}
+
+message Subscription {
+  string type           = 1; // "pro"
+  int64  issued_at      = 2;
+  int64  expires_at     = 3;
+  int32  days_remaining = 4;
+  string token_id       = 5;
+}
+
+message WatchIdentities {
+  repeated string identities = 1;
+}
+
+message UnwatchIdentities {
+  repeated string identities = 1;
+}
+
+message AccountPresence {
+  string identity_key = 1;
+
+  enum Status {
+    OFFLINE = 0;
+    ONLINE  = 1;
+  }
+
+  Status status = 2;
+  uint64 ts     = 3;
+}
+
+message AccountAccessUpdated {
+  string                identity_key  = 1;
+  repeated Subscription subscriptions = 2;
+}
+
+message IgnoredChat {
+  string chat_id = 1;
+  string reason  = 2;
+}
+
+message LeaveChat {
+  string chat_id = 1;
+}
+
+message LeaveChatResponse {
+  ResponseStatus status  = 1;
+  string         chat_id = 2;
+}
+
+message ReportUser {
+  string target_identity = 1;
+  string reason          = 2;
+}
+
+message ReportUserResponse {
+  ResponseStatus status          = 1;
+  int32          new_score       = 2;
+  // Echoes the identity that was reported, so a caller with several
+  // reportUser() calls in flight at once can match a response back to the
+  // right request instead of matching whichever resolves first.
+  string         target_identity = 3;
+}
+
+message ReputationUpdated {
+  string                identity      = 1;
+  bool                  is_restricted = 2;
+  int32                 score         = 3;
+  string                reason        = 4;
+  repeated Subscription subscriptions = 5;
+}
+
+message UpdateChatRoles {
+  string          chat_id    = 1;
+  repeated string admins     = 2;
+  repeated string moderators = 3;
+}
+
+message UpdateChatRolesResponse {
+  ResponseStatus status       = 1;
+  string         chat_id      = 2;
+  uint64         chat_version = 3;
+}
+
+message UpgradeContract {
+  string bundle = 1;
+}
+
+message UpgradeContractResponse {
+  string status = 1;
+  string error  = 2;
+}
+
+message GetMetrics {
+}
+
+message MetricsWallets {
+  int32 total = 1;
+}
+
+message MetricsDevices {
+  int32  total          = 1;
+  double avg_per_wallet = 2;
+}
+
+message MetricsChats {
+  int32             total   = 1;
+  map<string, int32> by_type = 2;
+}
+
+message MetricsAccess {
+  map<string, int32> by_tier         = 1;
+  int32              pro_subscribers = 2;
+  int32              restricted      = 3;
+}
+
+message MetricsInvites {
+  int32 total    = 1;
+  int32 consumed = 2;
+  int32 pending  = 3;
+}
+
+message MetricsDiscovery {
+  int32               total     = 1;
+  map<string, int32>  byCategory = 2;
+}
+
+message MetricsWidgets {
+  int32               total  = 1;
+  map<string, int32>  byMode = 2;
+}
+
+message MetricsData {
+  MetricsWallets    wallets   = 1;
+  MetricsDevices    devices   = 2;
+  MetricsChats      chats     = 3;
+  MetricsAccess     access    = 4;
+  MetricsInvites    invites   = 5;
+  MetricsDiscovery  discovery = 6;
+  MetricsWidgets    widgets   = 7;
+  string            contract_version = 8;
+}
+
+message MetricsResponse {
+  ResponseStatus status  = 1;
+  MetricsData    metrics = 2;
+}
+
+// ── History Synchronization ────────────────────────────────────────────────
+//
+// Protocol flow (two phases):
+//
+//   Phase 1 — Negotiation
+//     Requester → Gateway → Peer : SyncHistoryRequest  (initiate + capability exchange)
+//     Peer → Gateway → Requester : SyncHistoryAccept   (range advertisement)
+//                               or SyncHistoryReject   (peer unavailable / unsupported)
+//
+//   Phase 2 — Transfer (one SyncHistoryFetch per chat)
+//     Requester → Gateway → Peer : SyncHistoryFetch    (request specific range)
+//     Peer → Gateway → Requester : SyncHistoryChunk *  (one or more batches)
+//     Peer → Gateway → Requester : SyncHistoryDone     (end of stream for this fetch)
+//
+// The gateway only validates source/destination device identity ownership and
+// routes opaque payloads. It never inspects sync content or stores sync state.
+
+// Requester → Gateway → Peer: initiate negotiation.
+// chat_ids lists the chats the requester wants to sync; the peer responds with
+// ranges only for chats it actually has history for.
+message SyncHistoryRequest {
+  string          requester_device_id  = 1;
+  string          protocol_version     = 2;
+  repeated string chat_ids             = 3;
+  // nacl.box public key (base64) generated by the requester for this sync
+  // session. The responder seals each DBMessage.text with this key so the
+  // gateway never sees plaintext. Included in every Fetch so the responder
+  // has it stateless without storing session state from the Request.
+  string          requester_pubkey     = 4;
+  // Challenge-response authentication: the requester sends 32 random bytes
+  // (base64) and its nacl.box device pubkey (hex). The responder must seal
+  // the challenge with nacl.box(challenge, nonce, requesterDevicePub,
+  // responderDevicePriv) and return the result in SyncHistoryAccept.
+  // This proves the responder knows the private key for responder_device_pub.
+  string          challenge            = 5;
+  string          requester_device_pub = 6;
+}
+
+// Per-chat range descriptor: advertises what the responder owns.
+// count is informational (lets the requester estimate total work).
+message SyncChatRange {
+  string chat_id = 1;
+  int64  min_ts  = 2;
+  int64  max_ts  = 3;
+  int32  count   = 4;
+}
+
+// Peer → Gateway → Requester: accept + range advertisement.
+// responder_device_id lets the requester address subsequent SyncHistoryFetch
+// messages to this specific peer (stateless gateway routing).
+// symKey sealed by the responder for the requester's registered device pubkey.
+// nacl.box(symKey, nonce, requesterDevicePub, ephemeralPrivkey).
+// Allows a first-access device to decrypt chat history without key rotation.
+message SyncSymKeyForChat {
+  string chat_id          = 1;
+  string ciphertext       = 2;
+  string nonce            = 3;
+  string ephemeral_pubkey = 4;
+}
+
+message SyncHistoryAccept {
+  string                    requester_device_id  = 1;
+  string                    responder_device_id  = 2;
+  string                    protocol_version     = 3;
+  repeated SyncChatRange    ranges               = 4;
+  // Challenge response: nacl.box(challenge, nonce, requesterDevicePub,
+  // responderDevicePriv). Proves the responder knows the private key for
+  // responder_device_pub. Empty if the requester sent no challenge.
+  string                    challenge_response   = 5;
+  string                    challenge_nonce      = 6;
+  string                    responder_device_pub = 7;
+  // Per-chat symKeys sealed for the requester's registered device pubkey.
+  // Only populated when the responder has a decrypted symKey for the chat.
+  repeated SyncSymKeyForChat sealed_sym_keys     = 8;
+}
+
+// Peer → Gateway → Requester: reject (peer has no history, is busy, or
+// speaks an incompatible protocol version).
+message SyncHistoryReject {
+  string requester_device_id = 1;
+  string reason              = 2;
+}
+
+// Requester → Gateway → Peer: request a specific message range for one chat.
+// from_ts is an exclusive lower bound (0 = from the beginning).
+// to_ts is an inclusive upper bound (0 = no upper bound).
+// limit caps the total messages returned; 0 = responder uses its own default.
+// The SyncManager sets these based on local cursor state — not the protocol.
+message SyncHistoryFetch {
+  string requester_device_id = 1;
+  string target_device_id    = 2;
+  string chat_id             = 3;
+  int64  from_ts             = 4;
+  int64  to_ts               = 5;
+  int32  limit               = 6;
+  // Same requester_pubkey from SyncHistoryRequest, repeated here so the
+  // responder can seal text fields without tracking per-session state.
+  string requester_pubkey    = 7;
+}
+
+// Protocol-level history entry. Storage-agnostic: no Dexie, IndexedDB, or
+// schema details leak into this message. The receiver maps it to its own
+// persistence format.
+message SyncHistoryEntry {
+  string msg_id          = 1;
+  string chat_id         = 2;
+  string sender          = 3;
+  int64  ts              = 4;
+  string ciphertext      = 5;
+  string nonce           = 6;
+  string reply_to_msg_id = 7;
+  bool   edited          = 8;
+  int64  edited_at       = 9;
+  bool   removed         = 10;
+  int64  removed_at      = 11;
+  // DBMessage.text sealed with nacl.box(text, nonce, requesterPubkey, responderEphemeralPrivkey).
+  // sealed_text_nonce is the nacl.box nonce (distinct from the message nonce above).
+  // The responder ephemeral pubkey is carried per-chunk in SyncHistoryChunk.
+  string sealed_text       = 12;
+  string sealed_text_nonce = 13;
+  // JSON-encoded DBMessage.reactions: Record<identityKey, { emoji: string; ts: number }>
+  string reactions_json    = 14;
+}
+
+// Peer → Gateway → Requester: one batch of entries for an in-progress fetch.
+// has_more signals whether more chunks follow before SyncHistoryDone.
+// last_ts carries the ts of the final entry in this chunk — used by the
+// SyncManager to update its per-chat cursor for recovery after reconnect.
+message SyncHistoryChunk {
+  string                    requester_device_id          = 1;
+  string                    chat_id                      = 2;
+  repeated SyncHistoryEntry entries                      = 3;
+  bool                      has_more                     = 4;
+  int64                     last_ts                      = 5;
+  // Ephemeral nacl.box pubkey (base64) generated by the responder for this
+  // fetch. All SyncHistoryEntry.sealed_text values in this chunk were sealed
+  // with the corresponding secret key. One keypair per handleSyncFetch call.
+  string                    responder_ephemeral_pubkey   = 6;
+}
+
+// Peer → Gateway → Requester: signals the end of the entry stream for one
+// SyncHistoryFetch. total_sent is the count of entries sent across all chunks.
+// has_more is true when the responder hit the fetch limit and there are more
+// messages beyond last_ts — the requester should re-fetch from the cursor.
+message SyncHistoryDone {
+  string requester_device_id = 1;
+  string chat_id             = 2;
+  int32  total_sent          = 3;
+  bool   has_more            = 4;
+}

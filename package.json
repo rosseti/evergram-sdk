@@ -1,0 +1,61 @@
+{
+  "name": "evergram-sdk",
+  "version": "0.1.0",
+  "description": "Headless SDK for building bots and programmatic integrations on the Evergram protocol (XRPL wallet-signature auth, E2EE messaging).",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "protoc": "protoc --plugin=./node_modules/.bin/protoc-gen-ts_proto --ts_proto_out=. ./src/proto/evergram.proto --ts_proto_opt=esModuleInterop=true",
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration --testTimeout=90000",
+    "example:echo-bot": "tsx examples/echo-bot/index.ts",
+    "example:moderation-bot": "tsx examples/moderation-bot/index.ts",
+    "example:webhook-bridge": "tsx examples/webhook-bridge/index.ts",
+    "example:paywall-bot": "tsx examples/paywall-bot/index.ts",
+    "example:widget-visitor-bot": "tsx examples/widget-visitor-bot/index.ts",
+    "example:widget-channel-bot": "tsx examples/widget-channel-bot/index.ts",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,json,md}": [
+      "prettier --write"
+    ],
+    "*.{ts,tsx}": [
+      "oxlint"
+    ]
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.1",
+    "ripple-keypairs": "^3.0.0",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.21.1",
+    "xrpl": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26",
+    "@types/ws": "^8.18.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "oxlint": "^1.74.0",
+    "prettier": "^3.9.5",
+    "ts-proto": "^2.12.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7",
+    "vitest": "^4.1.10"
+  }
+}

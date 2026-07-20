@@ -1,0 +1,10 @@
+dist/
+node_modules/
+src/proto/evergram.ts
+package-lock.json
+
+# Manual byte-for-byte mirrors of webapp/ files — see their own
+# *-sync.test.ts guards. Reformatting only the SDK's copy would desync it
+# from the canonical webapp original without webapp ever knowing.
+src/message-content.ts
+src/proto/evergram.proto
