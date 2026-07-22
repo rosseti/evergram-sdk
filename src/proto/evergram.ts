@@ -1383,6 +1383,12 @@ export interface EncryptedKey {
 export interface QueryChats {
   knownVersions: { [key: string]: number };
   knownMetaVersions: { [key: string]: number };
+  /**
+   * Resumes a paginated sync at the chat immediately after this chatId
+   * (server-assigned, from the previous page's next_cursor). Omitted/empty
+   * starts from the beginning.
+   */
+  cursor: string;
 }
 
 export interface QueryChats_KnownVersionsEntry {
@@ -1448,6 +1454,12 @@ export interface QueryChatsResponse {
   results: ChatSyncResult[];
   pendingChatRequests: PendingChatRequest[];
   pendingGroupInvites: PendingGroupInvite[];
+  /**
+   * Non-empty when more chats remain beyond this page — the client should
+   * immediately re-send QueryChats with this as `cursor`. Empty means sync
+   * is complete for this request.
+   */
+  nextCursor: string;
 }
 
 export interface ResponseStatus {
@@ -16193,7 +16205,7 @@ export const EncryptedKey: MessageFns<EncryptedKey> = {
 };
 
 function createBaseQueryChats(): QueryChats {
-  return { knownVersions: {}, knownMetaVersions: {} };
+  return { knownVersions: {}, knownMetaVersions: {}, cursor: "" };
 }
 
 export const QueryChats: MessageFns<QueryChats> = {
@@ -16204,6 +16216,9 @@ export const QueryChats: MessageFns<QueryChats> = {
     globalThis.Object.entries(message.knownMetaVersions).forEach(([key, value]: [string, number]) => {
       QueryChats_KnownMetaVersionsEntry.encode({ key: key as any, value }, writer.uint32(26).fork()).join();
     });
+    if (message.cursor !== "") {
+      writer.uint32(34).string(message.cursor);
+    }
     return writer;
   },
 
@@ -16234,6 +16249,14 @@ export const QueryChats: MessageFns<QueryChats> = {
           if (entry3.value !== undefined) {
             message.knownMetaVersions[entry3.key] = entry3.value;
           }
+          continue;
+        }
+        case 4: {
+          if (tag !== 34) {
+            break;
+          }
+
+          message.cursor = reader.string();
           continue;
         }
       }
@@ -16281,6 +16304,7 @@ export const QueryChats: MessageFns<QueryChats> = {
           {},
         )
         : {},
+      cursor: isSet(object.cursor) ? globalThis.String(object.cursor) : "",
     };
   },
 
@@ -16303,6 +16327,9 @@ export const QueryChats: MessageFns<QueryChats> = {
           obj.knownMetaVersions[k] = Math.round(v);
         });
       }
+    }
+    if (message.cursor !== "") {
+      obj.cursor = message.cursor;
     }
     return obj;
   },
@@ -16328,6 +16355,7 @@ export const QueryChats: MessageFns<QueryChats> = {
         }
         return acc;
       }, {});
+    message.cursor = object.cursor ?? "";
     return message;
   },
 };
@@ -16627,7 +16655,14 @@ export const ChatSyncResult: MessageFns<ChatSyncResult> = {
 };
 
 function createBaseQueryChatsResponse(): QueryChatsResponse {
-  return { status: undefined, account: "", results: [], pendingChatRequests: [], pendingGroupInvites: [] };
+  return {
+    status: undefined,
+    account: "",
+    results: [],
+    pendingChatRequests: [],
+    pendingGroupInvites: [],
+    nextCursor: "",
+  };
 }
 
 export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
@@ -16646,6 +16681,9 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
     }
     for (const v of message.pendingGroupInvites) {
       PendingGroupInvite.encode(v!, writer.uint32(42).fork()).join();
+    }
+    if (message.nextCursor !== "") {
+      writer.uint32(50).string(message.nextCursor);
     }
     return writer;
   },
@@ -16697,6 +16735,14 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
           message.pendingGroupInvites.push(PendingGroupInvite.decode(reader, reader.uint32()));
           continue;
         }
+        case 6: {
+          if (tag !== 50) {
+            break;
+          }
+
+          message.nextCursor = reader.string();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -16723,6 +16769,11 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
         : globalThis.Array.isArray(object?.pending_group_invites)
         ? object.pending_group_invites.map((e: any) => PendingGroupInvite.fromJSON(e))
         : [],
+      nextCursor: isSet(object.nextCursor)
+        ? globalThis.String(object.nextCursor)
+        : isSet(object.next_cursor)
+        ? globalThis.String(object.next_cursor)
+        : "",
     };
   },
 
@@ -16743,6 +16794,9 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
     if (message.pendingGroupInvites?.length) {
       obj.pendingGroupInvites = message.pendingGroupInvites.map((e) => PendingGroupInvite.toJSON(e));
     }
+    if (message.nextCursor !== "") {
+      obj.nextCursor = message.nextCursor;
+    }
     return obj;
   },
 
@@ -16758,6 +16812,7 @@ export const QueryChatsResponse: MessageFns<QueryChatsResponse> = {
     message.results = object.results?.map((e) => ChatSyncResult.fromPartial(e)) || [];
     message.pendingChatRequests = object.pendingChatRequests?.map((e) => PendingChatRequest.fromPartial(e)) || [];
     message.pendingGroupInvites = object.pendingGroupInvites?.map((e) => PendingGroupInvite.fromPartial(e)) || [];
+    message.nextCursor = object.nextCursor ?? "";
     return message;
   },
 };

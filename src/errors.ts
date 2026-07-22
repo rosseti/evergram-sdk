@@ -83,6 +83,7 @@ const NOT_FOUND_CODES = new Set(["CHAT_NOT_FOUND", "chat_not_found", "device_not
 const VALIDATION_CODES = new Set([
   "INVALID_PARTICIPANTS",
   "invalid_participants",
+  "TOO_MANY_PARTICIPANTS",
   "invalid_message_size",
   "INVALID_CHAT_NAME",
   "invalid_chat_name",

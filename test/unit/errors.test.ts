@@ -41,6 +41,8 @@ describe("errorFromCode", () => {
     ["last_admin_protection", EvergramValidationError],
     ["founder_protection", EvergramValidationError],
     ["ALREADY_PARTICIPANT", EvergramValidationError],
+    // createChat/addParticipant: group participant-cap check.
+    ["TOO_MANY_PARTICIPANTS", EvergramValidationError],
     // Device revocation: deliberately NOT EvergramAuthError on either of
     // these — requestWithReauth only retries EvergramAuthError, and
     // reconnect-and-retry can't fix a revoked device or a stale chat

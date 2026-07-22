@@ -1083,6 +1083,10 @@ message EncryptedKey {
 message QueryChats {
   map<string, uint32> known_versions      = 2;
   map<string, uint32> known_meta_versions = 3;
+  // Resumes a paginated sync at the chat immediately after this chatId
+  // (server-assigned, from the previous page's next_cursor). Omitted/empty
+  // starts from the beginning.
+  string cursor = 4;
 }
 
 message ChatSyncResult {
@@ -1107,6 +1111,10 @@ message QueryChatsResponse {
   repeated ChatSyncResult     results               = 3;
   repeated PendingChatRequest pending_chat_requests = 4;
   repeated PendingGroupInvite pending_group_invites = 5;
+  // Non-empty when more chats remain beyond this page — the client should
+  // immediately re-send QueryChats with this as `cursor`. Empty means sync
+  // is complete for this request.
+  string next_cursor = 6;
 }
 
 message ResponseStatus {

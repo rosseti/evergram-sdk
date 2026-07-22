@@ -32,6 +32,7 @@ import {
 } from "./crypto.js";
 import {
   EvergramAuthError,
+  EvergramConnectionError,
   EvergramNotFoundError,
   EvergramRotationError,
   EvergramTimeoutError,
@@ -490,6 +491,17 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
 
     this.transport.onClose(() => {
       this.authenticated = false;
+      // Reject every in-flight request immediately instead of leaving each
+      // one to hang until its own requestTimeoutMs timer fires (up to 90s
+      // for some calls) — lets requestWithReauth retry as soon as the
+      // transport reconnects. Mirrors the webapp client's inflightAborters
+      // behavior in evergram-client.ts's onClose handler.
+      for (const entry of this.pendingRequests) {
+        clearTimeout(entry.timer);
+        entry.reject(new EvergramConnectionError("connection_lost", "Transport disconnected"));
+      }
+      this.pendingRequests.length = 0;
+      this.pendingByRequestId.clear();
       this.emit("disconnected");
     });
 
@@ -1202,7 +1214,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // messages, processed the same way as unsolicited key-rotation broadcasts
   // (see handlePush below) — there is no single request/response pair to
   // await here in the real protocol.
-  syncChats(): void {
+  syncChats(cursor?: string): void {
     const knownVersions: Record<string, number> = {};
     const knownMetaVersions: Record<string, number> = {};
     for (const [chatId, chat] of this.chats.entries()) {
@@ -1218,7 +1230,11 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       knownMetaVersions[chatId] = chat.metaVersion ? Number(chat.metaVersion) : 1;
     }
 
-    this.transport.send(ClientMessage.create({ queryChats: { knownVersions, knownMetaVersions } }));
+    this.transport.send(
+      ClientMessage.create({
+        queryChats: { knownVersions, knownMetaVersions, cursor: cursor || "" },
+      }),
+    );
   }
 
   getChat(chatId: string): ChatInfo | undefined {
@@ -1873,6 +1889,17 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       }
     }
     for (const chat of chatCandidates) this.processChatInfo(chat);
+
+    // A non-empty next_cursor means the contract capped this response's
+    // chat count and there are more pages — see queryChats' pagination
+    // comment contract-side (evergram-contract.js) for why: an identity
+    // with a large chat history otherwise produces one unbounded response
+    // that can get truncated in transit. Immediately request the next page;
+    // knownVersions/knownMetaVersions are recomputed fresh each call, same
+    // as any other syncChats() invocation.
+    if (msg.queryChatsResponse?.nextCursor) {
+      this.syncChats(msg.queryChatsResponse.nextCursor);
+    }
 
     // Boot sync: silently merge, mirroring how queryChatsResponse.results
     // above updates `chats` without emitting per-item events.
