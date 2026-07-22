@@ -63,7 +63,12 @@ const DEVICE_REVOKED_CODES = new Set(["device_revoked"]);
 
 const ROTATION_CODES = new Set(["rotation_conflict", "rotation_required", "ROTATION_REQUIRED"]);
 
-const RATE_LIMIT_CODES = new Set(["RATE_LIMIT", "rate_limited", "RATE_LIMIT_CREATE_CHAT"]);
+const RATE_LIMIT_CODES = new Set([
+  "RATE_LIMIT",
+  "rate_limited",
+  "RATE_LIMIT_CREATE_CHAT",
+  "RATE_LIMITED",
+]);
 
 const ACCESS_DENIED_CODES = new Set([
   "ACCESS_DENIED",
