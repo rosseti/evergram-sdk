@@ -63,7 +63,22 @@ export class Transport {
       const ws = new WebSocket(this.url);
       this.ws = ws;
 
+      // Every handler below guards on `ws === this.ws`: connect() calling
+      // close() then immediately connect() again (see EvergramCore's
+      // reconnectAndAuthenticate) resets `manuallyClosed` back to false
+      // before the OLD socket's own "close" event has fired — Node's ws
+      // close is asynchronous, so it can arrive well after a newer `this.ws`
+      // is already in place. Without this guard, that stale close event
+      // reads the CURRENT (reset) manuallyClosed flag, mistakes an
+      // intentional close for a dropped connection, and calls
+      // scheduleReconnect() on top of the perfectly healthy new connection —
+      // confirmed empirically: a bare close()+connect() produced 9+ cascading
+      // reconnect cycles, each one's own eventual stale close re-triggering
+      // the next. The same staleness applies to onOpen/onMessage/onError —
+      // a handler bound to a socket that's since been superseded should
+      // never touch shared state or settle this specific connect() call.
       const onOpen = () => {
+        if (ws !== this.ws) return;
         this.reconnectAttempts = 0;
         this.flushQueue();
         for (const cb of this.openListeners) cb();
@@ -71,6 +86,7 @@ export class Transport {
       };
 
       const onMessage = (data: WebSocket.RawData) => {
+        if (ws !== this.ws) return;
         let msg: ServerMessage;
         try {
           msg = ServerMessage.decode(new Uint8Array(data as Buffer));
@@ -81,11 +97,13 @@ export class Transport {
       };
 
       const onClose = () => {
+        if (ws !== this.ws) return;
         for (const cb of this.closeListeners) cb();
         if (!this.manuallyClosed) this.scheduleReconnect();
       };
 
       const onError = (err: Error) => {
+        if (ws !== this.ws) return;
         if (ws.readyState !== WebSocket.OPEN) {
           reject(new EvergramConnectionError("connection_failed", err.message));
         }
