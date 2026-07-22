@@ -180,11 +180,18 @@ interface PendingRequest {
   reject: (err: Error) => void;
   timer: NodeJS.Timeout;
   // Disambiguates concurrent same-type calls (e.g. two getProfile() calls
-  // in flight at once) — the wire protocol has no correlation id, but some
-  // responses already echo back enough of the request to match on, same
-  // idea as webapp's _sendAndWaitResponse `matcher` param. Absent for calls
-  // where no ambiguity is possible or no echoed field exists to match on.
+  // in flight at once) — some responses already echo back enough of the
+  // request to match on, same idea as webapp's _sendAndWaitResponse
+  // `matcher` param. Now a fallback (see requestId below): kept for calls
+  // against a gateway that predates request_id, and for responses that
+  // genuinely carry no echoed field.
   matcher?: (value: any) => boolean;
+  // Client-generated correlation id, echoed back by the gateway on the
+  // matching response (see ClientMessage.request_id in the proto) —
+  // resolvePendingRequests() checks this before any type/matcher-based
+  // guessing. Undefined for waiters with nothing sent on the wire (e.g. the
+  // authChallenge push-wait, which isn't a response to any request()).
+  requestId?: number;
 }
 
 export interface EvergramChatMessage {
@@ -367,6 +374,14 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private readonly requestTimeoutMs: number;
 
   private readonly pendingRequests: PendingRequest[] = [];
+  // O(1) lookup for the common case (both sides support request_id) —
+  // pendingRequests remains the source of truth for entries and still
+  // backs the type/matcher fallback below.
+  private readonly pendingByRequestId = new Map<number, PendingRequest>();
+  // uint32 on the wire; wraps back to 1 rather than 0 ("unset") on overflow.
+  // A long-lived bot connection issuing one request/ms would still take
+  // ~50 days to wrap, long past any single request's timeout window.
+  private nextRequestId = 1;
   private readonly chats = new Map<string, ChatInfo>();
   private readonly symKeys = new Map<string, Uint8Array>();
   private readonly pendingEnvelopes = new Map<string, Envelope[]>();
@@ -1616,6 +1631,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     expectedField: K,
     timeoutMs = this.requestTimeoutMs,
     matcher?: (value: NonNullable<ServerMessage[K]>) => boolean,
+    requestId?: number,
   ): Promise<NonNullable<ServerMessage[K]>> {
     return new Promise((resolve, reject) => {
       const entry: PendingRequest = {
@@ -1623,15 +1639,26 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
         resolve,
         reject,
         matcher,
+        requestId,
         timer: setTimeout(() => {
-          const idx = this.pendingRequests.indexOf(entry);
-          if (idx !== -1) this.pendingRequests.splice(idx, 1);
+          this.discardPending(entry);
           reject(new EvergramTimeoutError("timeout", `Timeout waiting for ${expectedField}`));
         }, timeoutMs),
       };
 
       this.pendingRequests.push(entry);
+      if (requestId) this.pendingByRequestId.set(requestId, entry);
     });
+  }
+
+  // Removes a settled/timed-out waiter from every structure it's tracked
+  // in — forgetting the Map half of this would leak an entry per request
+  // for the lifetime of the connection.
+  private discardPending(entry: PendingRequest): void {
+    const idx = this.pendingRequests.indexOf(entry);
+    if (idx !== -1) this.pendingRequests.splice(idx, 1);
+    if (entry.requestId) this.pendingByRequestId.delete(entry.requestId);
+    clearTimeout(entry.timer);
   }
 
   private request<K extends keyof ServerMessage>(
@@ -1640,8 +1667,11 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     timeoutMs = this.requestTimeoutMs,
     matcher?: (value: NonNullable<ServerMessage[K]>) => boolean,
   ): Promise<NonNullable<ServerMessage[K]>> {
-    const pending = this.waitForMessage(expectedField, timeoutMs, matcher);
-    this.transport.send(msg);
+    const requestId = this.nextRequestId++;
+    if (this.nextRequestId > 0xffffffff) this.nextRequestId = 1;
+
+    const pending = this.waitForMessage(expectedField, timeoutMs, matcher, requestId);
+    this.transport.send({ ...msg, requestId });
     return pending;
   }
 
@@ -1700,6 +1730,48 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       return;
     }
 
+    // request_id is authoritative when present on both sides — an exact
+    // match is resolved directly (O(1), no type/matcher guessing), and this
+    // ALWAYS returns without falling through to the type/matcher/bare-error
+    // logic below, whether or not a matching entry was found. A requestId
+    // set on the incoming message but absent from pendingByRequestId means
+    // this response is definitively for a call that's no longer waiting
+    // (already resolved, or timed out and discarded) — NOT for some other
+    // unrelated concurrent same-type call. Falling through in that case
+    // (an earlier version of this code did) re-opens exactly the cross-
+    // resolve bug requestId exists to close: a late/duplicate response for
+    // a discarded request would hit the type loop's FIFO fallback or the
+    // bare-error fallback and silently resolve/reject a DIFFERENT in-flight
+    // call with the wrong result. Any data this message also carries (e.g.
+    // a bundled rotateChatVersionResponse alongside addParticipantResponse
+    // — ts-proto doesn't enforce oneof exclusivity at runtime) is still
+    // applied to local state via handlePush() below regardless; a genuinely
+    // separate pending call for that same field gets its own dedicated,
+    // correctly-tagged response from the gateway rather than needing to
+    // scavenge one off an unrelated message.
+    if (msg.requestId) {
+      const entry = this.pendingByRequestId.get(msg.requestId);
+      if (entry) {
+        const value = (msg as any)[entry.expectedField];
+        this.discardPending(entry);
+
+        if (value !== undefined && value.status && value.status.ok === false) {
+          entry.reject(errorFromCode(value.status.code, value.status.message));
+        } else if (value !== undefined) {
+          entry.resolve(value);
+        } else if (msg.error) {
+          entry.reject(errorFromCode(msg.error.code || msg.error.type, msg.error.message));
+        } else {
+          entry.reject(
+            new Error(
+              `Received requestId-matched response with no ${String(entry.expectedField)} or error`,
+            ),
+          );
+        }
+      }
+      return;
+    }
+
     const resolvedTypes = new Set<keyof ServerMessage>();
 
     for (const expectedField of new Set(this.pendingRequests.map((e) => e.expectedField))) {
@@ -1750,8 +1822,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
 
       const entry = this.pendingRequests[idx];
       resolvedTypes.add(expectedField);
-      this.pendingRequests.splice(idx, 1);
-      clearTimeout(entry.timer);
+      this.discardPending(entry);
 
       if (value.status && value.status.ok === false) {
         entry.reject(errorFromCode(value.status.code, value.status.message));
@@ -1760,13 +1831,14 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       }
     }
 
-    // The wire protocol has no correlation id (see webapp's
-    // _sendAndWaitResponse, which has the same limitation) — a bare error
+    // Only reached when msg.requestId is falsy (the requestId branch above
+    // always returns otherwise) — talking to a gateway that predates
+    // request_id, or a genuinely untagged push-adjacent error. A bare error
     // not tied to any specific field is attributed to the oldest pending
-    // request, best-effort.
+    // request, best-effort, same as webapp's _sendAndWaitResponse fallback.
     if (msg.error && this.pendingRequests.length > 0) {
-      const entry = this.pendingRequests.shift()!;
-      clearTimeout(entry.timer);
+      const entry = this.pendingRequests[0];
+      this.discardPending(entry);
       entry.reject(errorFromCode(msg.error.code || msg.error.type, msg.error.message));
     } else if (msg.error) {
       this.emit("error", errorFromCode(msg.error.code || msg.error.type, msg.error.message));

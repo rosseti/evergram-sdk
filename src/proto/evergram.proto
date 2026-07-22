@@ -62,6 +62,15 @@ message DeviceForceRefreshResponse {
 }
 
 message ClientMessage {
+  // Client-generated, gateway-echoed correlation id for this request's
+  // response (see ServerMessage.request_id). Purely a browser/SDK<->gateway
+  // concern — stripped before the payload is forwarded to the contract, so
+  // it carries no consensus/determinism weight. 0 means "not set" (senders
+  // must count from 1) — older clients that predate this field send 0,
+  // which the gateway never echoes, so those connections fall back to the
+  // pre-existing per-field response matchers.
+  optional uint32 request_id = 1;
+
   oneof payload {
     Auth                 auth            = 2;
     CreateChat           create_chat     = 3;
@@ -663,6 +672,12 @@ message ListPublicChatsResponse {
 }
 
 message ServerMessage {
+  // Echoes ClientMessage.request_id for responses to a specific request
+  // (0/absent for server-initiated pushes — envelope, presence, profile
+  // updates, etc. — which aren't responses to any single request). See
+  // ClientMessage.request_id for the full rationale.
+  optional uint32 request_id = 73;
+
   oneof payload {
     AuthResponse           auth_response            = 1;
     RegisterDeviceResponse register_device_response = 2;

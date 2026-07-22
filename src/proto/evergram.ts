@@ -379,6 +379,16 @@ export interface DeviceForceRefreshResponse {
 }
 
 export interface ClientMessage {
+  /**
+   * Client-generated, gateway-echoed correlation id for this request's
+   * response (see ServerMessage.request_id). Purely a browser/SDK<->gateway
+   * concern — stripped before the payload is forwarded to the contract, so
+   * it carries no consensus/determinism weight. 0 means "not set" (senders
+   * must count from 1) — older clients that predate this field send 0,
+   * which the gateway never echoes, so those connections fall back to the
+   * pre-existing per-field response matchers.
+   */
+  requestId?: number | undefined;
   auth?: Auth | undefined;
   createChat?: CreateChat | undefined;
   registerDevice?: RegisterDevice | undefined;
@@ -931,6 +941,13 @@ export interface ListPublicChatsResponse {
 }
 
 export interface ServerMessage {
+  /**
+   * Echoes ClientMessage.request_id for responses to a specific request
+   * (0/absent for server-initiated pushes — envelope, presence, profile
+   * updates, etc. — which aren't responses to any single request). See
+   * ClientMessage.request_id for the full rationale.
+   */
+  requestId?: number | undefined;
   authResponse?: AuthResponse | undefined;
   registerDeviceResponse?: RegisterDeviceResponse | undefined;
   createChatResponse?: CreateChatResponse | undefined;
@@ -2539,6 +2556,7 @@ export const DeviceForceRefreshResponse: MessageFns<DeviceForceRefreshResponse> 
 
 function createBaseClientMessage(): ClientMessage {
   return {
+    requestId: undefined,
     auth: undefined,
     createChat: undefined,
     registerDevice: undefined,
@@ -2605,6 +2623,9 @@ function createBaseClientMessage(): ClientMessage {
 
 export const ClientMessage: MessageFns<ClientMessage> = {
   encode(message: ClientMessage, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== undefined) {
+      writer.uint32(8).uint32(message.requestId);
+    }
     if (message.auth !== undefined) {
       Auth.encode(message.auth, writer.uint32(18).fork()).join();
     }
@@ -2798,6 +2819,14 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.requestId = reader.uint32();
+          continue;
+        }
         case 2: {
           if (tag !== 18) {
             break;
@@ -3297,6 +3326,11 @@ export const ClientMessage: MessageFns<ClientMessage> = {
 
   fromJSON(object: any): ClientMessage {
     return {
+      requestId: isSet(object.requestId)
+        ? globalThis.Number(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.Number(object.request_id)
+        : undefined,
       auth: isSet(object.auth) ? Auth.fromJSON(object.auth) : undefined,
       createChat: isSet(object.createChat)
         ? CreateChat.fromJSON(object.createChat)
@@ -3595,6 +3629,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
 
   toJSON(message: ClientMessage): unknown {
     const obj: any = {};
+    if (message.requestId !== undefined) {
+      obj.requestId = Math.round(message.requestId);
+    }
     if (message.auth !== undefined) {
       obj.auth = Auth.toJSON(message.auth);
     }
@@ -3786,6 +3823,7 @@ export const ClientMessage: MessageFns<ClientMessage> = {
   },
   fromPartial<I extends Exact<DeepPartial<ClientMessage>, I>>(object: I): ClientMessage {
     const message = createBaseClientMessage();
+    message.requestId = object.requestId ?? undefined;
     message.auth = (object.auth !== undefined && object.auth !== null) ? Auth.fromPartial(object.auth) : undefined;
     message.createChat = (object.createChat !== undefined && object.createChat !== null)
       ? CreateChat.fromPartial(object.createChat)
@@ -9624,6 +9662,7 @@ export const ListPublicChatsResponse: MessageFns<ListPublicChatsResponse> = {
 
 function createBaseServerMessage(): ServerMessage {
   return {
+    requestId: undefined,
     authResponse: undefined,
     registerDeviceResponse: undefined,
     createChatResponse: undefined,
@@ -9700,6 +9739,9 @@ function createBaseServerMessage(): ServerMessage {
 
 export const ServerMessage: MessageFns<ServerMessage> = {
   encode(message: ServerMessage, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.requestId !== undefined) {
+      writer.uint32(584).uint32(message.requestId);
+    }
     if (message.authResponse !== undefined) {
       AuthResponse.encode(message.authResponse, writer.uint32(10).fork()).join();
     }
@@ -9923,6 +9965,14 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     while (reader.pos < end) {
       const tag = reader.uint32();
       switch (tag >>> 3) {
+        case 73: {
+          if (tag !== 584) {
+            break;
+          }
+
+          message.requestId = reader.uint32();
+          continue;
+        }
         case 1: {
           if (tag !== 10) {
             break;
@@ -10502,6 +10552,11 @@ export const ServerMessage: MessageFns<ServerMessage> = {
 
   fromJSON(object: any): ServerMessage {
     return {
+      requestId: isSet(object.requestId)
+        ? globalThis.Number(object.requestId)
+        : isSet(object.request_id)
+        ? globalThis.Number(object.request_id)
+        : undefined,
       authResponse: isSet(object.authResponse)
         ? AuthResponse.fromJSON(object.authResponse)
         : isSet(object.auth_response)
@@ -10850,6 +10905,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
 
   toJSON(message: ServerMessage): unknown {
     const obj: any = {};
+    if (message.requestId !== undefined) {
+      obj.requestId = Math.round(message.requestId);
+    }
     if (message.authResponse !== undefined) {
       obj.authResponse = AuthResponse.toJSON(message.authResponse);
     }
@@ -11075,6 +11133,7 @@ export const ServerMessage: MessageFns<ServerMessage> = {
   },
   fromPartial<I extends Exact<DeepPartial<ServerMessage>, I>>(object: I): ServerMessage {
     const message = createBaseServerMessage();
+    message.requestId = object.requestId ?? undefined;
     message.authResponse = (object.authResponse !== undefined && object.authResponse !== null)
       ? AuthResponse.fromPartial(object.authResponse)
       : undefined;

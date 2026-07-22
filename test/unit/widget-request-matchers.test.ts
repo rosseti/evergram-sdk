@@ -29,7 +29,10 @@ class FakeTransport {
     return Promise.resolve();
   }
   close() {}
-  send() {}
+  sent: any[] = [];
+  send(msg: any) {
+    this.sent.push(msg);
+  }
   trigger(msg: any) {
     this.handlers.forEach((h) => h(msg));
   }
@@ -113,5 +116,71 @@ describe("widget request matchers", () => {
 
     await expect(callA).resolves.toMatchObject({ widgetId: "widget-a" });
     await expect(callB).resolves.toMatchObject({ widgetId: "widget-b" });
+  });
+
+  // requestId (ClientMessage.request_id, echoed back as ServerMessage.
+  // request_id) is now core.ts's primary correlation mechanism — it's
+  // authoritative before any matcher/type-based guessing runs. This test
+  // forces both concurrent calls to the SAME widgetId, so the widget_id
+  // matcher above genuinely cannot tell them apart; only requestId can.
+  it("requestId disambiguates two concurrent calls the widget_id matcher cannot (same widgetId)", async () => {
+    const first = core.getWidgetInfo("widget-a");
+    const second = core.getWidgetInfo("widget-a");
+
+    const [firstRequestId, secondRequestId] = transport.sent.map((m) => m.requestId);
+    expect(firstRequestId).toBeTruthy();
+    expect(secondRequestId).toBeTruthy();
+    expect(firstRequestId).not.toBe(secondRequestId);
+
+    // Deliver the SECOND call's response first, tagged with its own
+    // requestId — resolution must follow the id, not arrival order.
+    transport.trigger({
+      requestId: secondRequestId,
+      getWidgetInfoResponse: {
+        status: { ok: true },
+        enabled: true,
+        ownerIdentityKey: "owner-second",
+        devices: [],
+        widgetId: "widget-a",
+      },
+    });
+    transport.trigger({
+      requestId: firstRequestId,
+      getWidgetInfoResponse: {
+        status: { ok: true },
+        enabled: true,
+        ownerIdentityKey: "owner-first",
+        devices: [],
+        widgetId: "widget-a",
+      },
+    });
+
+    const [firstResp, secondResp] = await Promise.all([first, second]);
+    expect(firstResp.ownerIdentityKey).toBe("owner-first");
+    expect(secondResp.ownerIdentityKey).toBe("owner-second");
+  });
+
+  it("a requestId-tagged bare error rejects only the matching call, leaving the other concurrent call pending", async () => {
+    const first = core.getWidgetInfo("widget-a");
+    const second = core.getWidgetInfo("widget-b");
+
+    const [firstRequestId] = transport.sent.map((m) => m.requestId);
+
+    transport.trigger({
+      requestId: firstRequestId,
+      error: { code: "INTERNAL", message: "boom" },
+    });
+    transport.trigger({
+      getWidgetInfoResponse: {
+        status: { ok: true },
+        enabled: true,
+        ownerIdentityKey: "owner-b",
+        devices: [],
+        widgetId: "widget-b",
+      },
+    });
+
+    await expect(first).rejects.toThrow("boom");
+    await expect(second).resolves.toMatchObject({ ownerIdentityKey: "owner-b" });
   });
 });
