@@ -29,6 +29,7 @@
     "example:paywall-bot": "tsx examples/paywall-bot/index.ts",
     "example:widget-visitor-bot": "tsx examples/widget-visitor-bot/index.ts",
     "example:widget-channel-bot": "tsx examples/widget-channel-bot/index.ts",
+    "example:trivia-bot": "tsx examples/trivia-bot/index.ts",
     "prepare": "husky"
   },
   "lint-staged": {

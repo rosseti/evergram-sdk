@@ -84,6 +84,7 @@ Run the fuller version of this with persistence: `npm run example:echo-bot`.
 | `examples/paywall-bot`        | Monetization — gating a managed group behind a one-time payment_request/payment_receipt exchange.                                                                                                                                                                                               |
 | `examples/widget-visitor-bot` | Widget-visitor chat — echoes back anonymous visitor messages on an existing widget, and persists active rooms to disk so a restart can reclaim them (see `EvergramCore.registerVisitorSession`). Open the printed `/widget/{id}` URL in a browser to act as the visitor.                        |
 | `examples/widget-channel-bot` | Widget `public_group` channel — joins as an operator via `subscribePublicChannel`, echoes channel messages, and demonstrates moderation (`/kick`, `/ban`, `/op`, `/voice`, `/mod`, ...). Set `EVERGRAM_WIDGET_ID` to target a specific widget (falls back to the first one this identity owns). |
+| `examples/trivia-bot`         | Classic IRC-style trivia game (`!trivia`, `!score`) about the XRPL/Xahau/Evernode ecosystem — in-memory per-chat rounds and scoreboard, first correct answer wins the point.                                                                                                                    |
 
 Run with `npm run example:<name>`. Each example persists its generated
 wallet/device to `identity.json` next to it on first run (gitignored) so

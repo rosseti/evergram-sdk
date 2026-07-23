@@ -1,0 +1,173 @@
+import { join } from "node:path";
+import { EvergramBot } from "../../src/index.js";
+import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { QUESTIONS } from "./questions.js";
+
+const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
+const ROUND_TIMEOUT_MS = 30_000;
+
+const HELP_TEXT = [
+  "!trivia — ask a new question",
+  "!skip — reveal the answer and skip the current question",
+  "!score — show this chat's scoreboard",
+  "!help — show this message",
+].join("\n");
+
+// Old-school IRC trivia bots (like the classic "!gama" games) ran one round
+// at a time per channel, took the first correct answer, and kept an
+// in-memory scoreboard for the session. This example reproduces that same
+// shape on top of Evergram chats — no persistence across restarts, just
+// per-chat state held in memory while the process is alive.
+interface Round {
+  answer: string; // normalized, for matching
+  rawAnswer: string; // original casing, for the reveal message
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const rounds = new Map<string, Round>(); // chatId -> active question
+const scores = new Map<string, Map<string, number>>(); // chatId -> (identity -> points)
+const nicknames = new Map<string, string>(); // identity -> last-seen nickname, for display only
+
+function normalize(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // strip diacritics for loose matching
+    .replace(/[^a-z0-9]/g, ""); // ignore spacing/punctuation, e.g. "multi-signing" vs "multi signing"
+}
+
+function displayName(identity: string): string {
+  return nicknames.get(identity) ?? identity;
+}
+
+// getProfile is a network round-trip, so this only pays it once per
+// identity per process — after that, scoreboard/reveal messages read the
+// cached nickname instead of a raw rAddress. A stale cached nickname (the
+// user renamed since) is an acceptable tradeoff for a demo.
+async function cacheNickname(bot: EvergramBot, identity: string): Promise<void> {
+  if (nicknames.has(identity)) return;
+  try {
+    const profile = await bot.core.getProfile(identity);
+    if (profile?.nickname) nicknames.set(identity, profile.nickname);
+  } catch {
+    // no profile, or lookup failed — displayName() falls back to the raw identity
+  }
+}
+
+function scoreboard(chatId: string): string {
+  const chatScores = scores.get(chatId);
+  if (!chatScores || chatScores.size === 0) return "No one has scored yet.";
+
+  return [...chatScores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([identity, points], i) => `${i + 1}. ${displayName(identity)} — ${points}`)
+    .join("\n");
+}
+
+function awardPoint(chatId: string, identity: string): number {
+  const chatScores = scores.get(chatId) ?? new Map<string, number>();
+  const next = (chatScores.get(identity) ?? 0) + 1;
+  chatScores.set(identity, next);
+  scores.set(chatId, chatScores);
+  return next;
+}
+
+// Ends the round without awarding a point — used by both the timeout and
+// !skip. Always clears the timer first: !skip firing this manually must not
+// leave the timeout still pending to fire a second "time's up" later.
+function endRound(chatId: string): Round | undefined {
+  const round = rounds.get(chatId);
+  if (!round) return undefined;
+  clearTimeout(round.timer);
+  rounds.delete(chatId);
+  return round;
+}
+
+async function main() {
+  const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
+
+  const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "TriviaBot" });
+  bot.core.on("error", (err) => console.error("[trivia-bot] error:", err));
+  bot.core.on("disconnected", () => console.warn("[trivia-bot] disconnected from gateway"));
+  bot.core.on("reconnecting", (attempt) =>
+    console.warn(`[trivia-bot] reconnecting (attempt ${attempt})`),
+  );
+  bot.core.on("authenticated", () => console.log("[trivia-bot] (re)authenticated"));
+
+  bot.onMessage(async (msg, chat) => {
+    if (!chat) return; // chat metadata not synced yet
+    if (msg.content.type !== "text" || !msg.content.text) return;
+
+    const text = msg.content.text.trim();
+    const command = text.toLowerCase();
+
+    if (command === "!help") {
+      await bot.reply(msg, HELP_TEXT);
+      return;
+    }
+
+    if (command === "!trivia") {
+      const existing = rounds.get(msg.chatId);
+      if (existing) {
+        await bot.reply(msg, "There's already a question open! Answer it, or use !skip.");
+        return;
+      }
+
+      const question = QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)];
+      // setTimeout's callback runs outside bindEvent's wrapper, so a
+      // rejected sendMessage here would otherwise become an unhandled
+      // rejection — route it through the same "error" event by hand.
+      const timer = setTimeout(() => {
+        rounds.delete(msg.chatId);
+        bot.core
+          .sendMessage(msg.chatId, `⏰ Time's up! The answer was: ${question.answer}`)
+          .catch((err) => bot.core.emit("error", err));
+      }, ROUND_TIMEOUT_MS);
+      rounds.set(msg.chatId, {
+        answer: normalize(question.answer),
+        rawAnswer: question.answer,
+        timer,
+      });
+      await bot.reply(msg, `🎲 ${question.question} (${ROUND_TIMEOUT_MS / 1000}s to answer)`);
+      return;
+    }
+
+    if (command === "!skip") {
+      const round = endRound(msg.chatId);
+      if (!round) {
+        await bot.reply(msg, "No question is open right now. Ask one with !trivia.");
+        return;
+      }
+      await bot.reply(msg, `⏭️ Skipped. The answer was: ${round.rawAnswer}`);
+      return;
+    }
+
+    if (command === "!score") {
+      await bot.reply(msg, `🏆 Scoreboard:\n${scoreboard(msg.chatId)}`);
+      return;
+    }
+
+    const round = rounds.get(msg.chatId);
+    if (!round) return; // no open question — plain chat, ignore
+
+    if (normalize(text) === round.answer) {
+      endRound(msg.chatId);
+      await cacheNickname(bot, msg.sender);
+      const points = awardPoint(msg.chatId, msg.sender);
+      await bot.reply(
+        msg,
+        `✅ Correct, ${displayName(msg.sender)}! You now have ${points} point(s). Ask for another with !trivia.`,
+      );
+    }
+  });
+
+  await bot.start();
+  console.log(`[trivia-bot] online as ${wallet.address}`);
+}
+
+main().catch((err) => {
+  console.error("[trivia-bot] fatal:", err);
+  process.exit(1);
+});
