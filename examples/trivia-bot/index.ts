@@ -26,7 +26,6 @@ interface Round {
 
 const rounds = new Map<string, Round>(); // chatId -> active question
 const scores = new Map<string, Map<string, number>>(); // chatId -> (identity -> points)
-const nicknames = new Map<string, string>(); // identity -> last-seen nickname, for display only
 
 function normalize(text: string): string {
   return text
@@ -37,22 +36,13 @@ function normalize(text: string): string {
     .replace(/[^a-z0-9]/g, ""); // ignore spacing/punctuation, e.g. "multi-signing" vs "multi signing"
 }
 
-function displayName(identity: string): string {
-  return nicknames.get(identity) ?? identity;
-}
-
-// getProfile is a network round-trip, so this only pays it once per
-// identity per process — after that, scoreboard/reveal messages read the
-// cached nickname instead of a raw rAddress. A stale cached nickname (the
-// user renamed since) is an acceptable tradeoff for a demo.
-async function cacheNickname(bot: EvergramBot, identity: string): Promise<void> {
-  if (nicknames.has(identity)) return;
-  try {
-    const profile = await bot.core.getProfile(identity);
-    if (profile?.nickname) nicknames.set(identity, profile.nickname);
-  } catch {
-    // no profile, or lookup failed — displayName() falls back to the raw identity
-  }
+// `identity` is already a "<chainFamily>:<address>" identityKey (same shape
+// as msg.sender) — prefixing it with "@" lets every Evergram client resolve
+// it to that person's own cached nickname locally (falling back to a
+// shortened address if uncached), the same way a composer-inserted @mention
+// renders. No need for this bot to fetch/cache nicknames itself anymore.
+function mention(identity: string): string {
+  return `@${identity}`;
 }
 
 function scoreboard(chatId: string): string {
@@ -62,7 +52,7 @@ function scoreboard(chatId: string): string {
   return [...chatScores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
-    .map(([identity, points], i) => `${i + 1}. ${displayName(identity)} — ${points}`)
+    .map(([identity, points], i) => `${i + 1}. ${mention(identity)} — ${points}`)
     .join("\n");
 }
 
@@ -154,11 +144,10 @@ async function main() {
 
     if (normalize(text) === round.answer) {
       endRound(msg.chatId);
-      await cacheNickname(bot, msg.sender);
       const points = awardPoint(msg.chatId, msg.sender);
       await bot.reply(
         msg,
-        `✅ Correct, ${displayName(msg.sender)}! You now have ${points} point(s). Ask for another with !trivia.`,
+        `✅ Correct, ${mention(msg.sender)}! You now have ${points} point(s). Ask for another with !trivia.`,
       );
     }
   });
