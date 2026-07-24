@@ -5,7 +5,7 @@ import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 
 // Identity keys ("1:rAddress...") allowed to auto-join managed chats.
-// Replace with your own rule — an account-age check via a profile lookup,
+// Replace with your own rule: an account-age check via a profile lookup,
 // a database of vetted addresses, etc. This example keeps the rule itself
 // trivial so the join-request *plumbing* is what stands out.
 const ALLOWLIST = new Set(
@@ -16,7 +16,7 @@ const ALLOWLIST = new Set(
 );
 
 // Identity keys to auto-promote to moderator once they join via the
-// allowlist above — demonstrates updateChatRoles(). Optional: leave unset
+// allowlist above; demonstrates updateChatRoles(). Optional: leave unset
 // and approval still works, just without the promotion step.
 const PROMOTE = new Set(
   (process.env.MODERATION_PROMOTE || "")
@@ -27,7 +27,7 @@ const PROMOTE = new Set(
 
 // Note: this bot needs `group:create`/admin rights on the chats it manages.
 // A freshly generated wallet starts in the contract's default "early" tier,
-// which does not have that capability — see README "Access tiers" section.
+// which does not have that capability; see README "Access tiers" section.
 // Either grant beta access to this bot's address first, or run it against a
 // group an already-privileged account created and added this bot to.
 async function main() {
@@ -49,7 +49,7 @@ async function main() {
 
       if (PROMOTE.has(req.identity)) {
         // updateChatRoles() replaces the full admins/moderators lists, not a
-        // delta — read the current ones first and append to them.
+        // delta; read the current ones first and append to them.
         const roles = bot.core.getChat(req.chatId)?.meta?.roles;
         const admins = roles?.admins ?? [];
         const moderators = roles?.moderators ?? [];
@@ -67,7 +67,7 @@ async function main() {
     );
     await req.deny();
 
-    // reportUser() here is a one-off demo of the RPC, not a recommended policy —
+    // reportUser() here is a one-off demo of the RPC, not a recommended policy;
     // flagging every non-allowlisted request would spam reports for an ordinary
     // public chat; a real bot would gate this behind a repeat-offender count instead.
     await bot.core.reportUser(req.identity, "join request denied: not on allowlist");

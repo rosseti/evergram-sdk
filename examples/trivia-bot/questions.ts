@@ -4,7 +4,7 @@ export interface Question {
 }
 
 // A handful of sample rounds about the XRPL/Xahau/Evernode ecosystem that
-// Evergram itself runs on — swap this for a real question bank (a file, a
+// Evergram itself runs on; swap this for a real question bank (a file, a
 // database, an API) in anything beyond a demo.
 export const QUESTIONS: Question[] = [
   {

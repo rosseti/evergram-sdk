@@ -11,11 +11,11 @@ const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api
 const WEBAPP_URL = process.env.EVERGRAM_WEBAPP_URL || "http://localhost:3000";
 const SESSIONS_PATH = join(__dirname, "visitor-sessions.json");
 
-// Echoes back whatever an anonymous widget visitor sends — exercises the
+// Echoes back whatever an anonymous widget visitor sends; exercises the
 // widget-visitor flow end to end without needing a second human/admin
 // device. Open {WEBAPP_URL}/widget/{widgetId} (printed below) in a browser
 // to act as the visitor. For a no-browser simulation of the visitor side,
-// see sdk/test/integration/visitor-chat.test.ts — by protocol design a
+// see sdk/test/integration/visitor-chat.test.ts; by protocol design a
 // visitor is never authenticated, so there's no SDK-level client for that
 // role to use here.
 async function main() {
@@ -23,7 +23,7 @@ async function main() {
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "VisitorEchoBot" });
 
-  // Rehydrate rooms this process was a party to before a restart — see
+  // Rehydrate rooms this process was a party to before a restart; see
   // EvergramCore.registerVisitorSession's doc comment. Must run before
   // bot.start(): resyncVisitorSessions (right after auth) is what actually
   // reclaims each room's joiner slot from the gateway, the same way a bare
@@ -40,7 +40,7 @@ async function main() {
   bot.core.on("authenticated", () => console.log("[visitor-bot] (re)authenticated"));
 
   // Persist newly-arrived rooms so a restart can reclaim them later (see
-  // above); drop them once they're actually over — either end()ed, or this
+  // above); drop them once they're actually over: either end()ed, or this
   // process lost a join/reclaim race to another device of this same
   // identity (e.g. a browser tab also logged in as the widget owner), in
   // which case that other device keeps the conversation and this one just
@@ -85,13 +85,13 @@ async function main() {
   console.log(`[visitor-bot] online as ${wallet.address}`);
 
   // Assumes a widget already exists for this identity (create one at
-  // {WEBAPP_URL}/app/widgets, logged in as this same wallet) — this example
+  // {WEBAPP_URL}/app/widgets, logged in as this same wallet); this example
   // only listens, it doesn't mint one for you.
   const { widgets } = await bot.core.listWidgets();
   const widget = widgets.find((w) => !w.deleted);
   if (!widget) {
     throw new Error(
-      `No widget found for ${wallet.address} — create one first at ${WEBAPP_URL}/app/widgets`,
+      `No widget found for ${wallet.address}. Create one first at ${WEBAPP_URL}/app/widgets`,
     );
   }
 

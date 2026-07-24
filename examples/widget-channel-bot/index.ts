@@ -5,14 +5,14 @@ import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const WEBAPP_URL = process.env.EVERGRAM_WEBAPP_URL || "http://localhost:3000";
-// Parameterizable so this same example can run against any widget you own —
+// Parameterizable so this same example can run against any widget you own:
 // falls back to "the first non-deleted widget this identity owns" (same
 // convention as visitor-bot) when unset.
 const WIDGET_ID = process.env.EVERGRAM_WIDGET_ID || "";
 const NICKNAME = process.env.EVERGRAM_NICKNAME || "Widget Group Bot";
 
 // Joins this bot into a widget's public_group channel as an operator (auto-
-// opped, same as the webapp owner's live-arrival session) — echoes channel
+// opped, same as the webapp owner's live-arrival session); echoes channel
 // messages and demonstrates moderation via simple slash commands. Unlike
 // visitor-bot (which reacts to 1:1 rooms as visitors open them), a channel
 // is joined explicitly via subscribePublicChannel() and is shared by every
@@ -48,11 +48,11 @@ async function main() {
   });
 
   bot.core.on("visitorKicked", ({ reason }) => {
-    console.warn(`[channel-bot] this bot was ${reason} — subscription ended`);
+    console.warn(`[channel-bot] this bot was ${reason}; subscription ended`);
   });
 
   // Channel text arrives through the same "visitorMessage" event 1:1 rooms
-  // use (sendVisitorMessage/onVisitorMessage are roomToken-generic — see
+  // use (sendVisitorMessage/onVisitorMessage are roomToken-generic; see
   // [[evergram-sdk-relay-duplication]]), so this one handler covers both a
   // plain echo and a tiny slash-command surface for moderation.
   bot.onVisitorMessage(async (msg, handle) => {
@@ -84,7 +84,7 @@ async function main() {
       const resp = await handle.moderate(action, target);
       if (!(resp as { status?: { ok: boolean } }).status?.ok) {
         handle.reply(
-          `Couldn't ${command.slice(1)} ${target} — are they in the channel and are you an op?`,
+          `Couldn't ${command.slice(1)} ${target}. Are they in the channel and are you an op?`,
         );
       }
       return;
@@ -104,12 +104,12 @@ async function main() {
     throw new Error(
       WIDGET_ID
         ? `Widget ${WIDGET_ID} not found (or deleted) for ${wallet.address}`
-        : `No widget found for ${wallet.address} — create one first at ${WEBAPP_URL}/app/widgets`,
+        : `No widget found for ${wallet.address}. Create one first at ${WEBAPP_URL}/app/widgets`,
     );
   }
 
   // Auto-configure the widget into public_group with a fresh channel key if
-  // it isn't already set up that way — mirrors the settings page's own
+  // it isn't already set up that way; mirrors the settings page's own
   // "generate a key the first time you switch to Public Channel" behavior,
   // so this example works against a widget that's still in its default
   // private_chat state.

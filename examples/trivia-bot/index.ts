@@ -7,16 +7,16 @@ const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api
 const ROUND_TIMEOUT_MS = 30_000;
 
 const HELP_TEXT = [
-  "!trivia — ask a new question",
-  "!skip — reveal the answer and skip the current question",
-  "!score — show this chat's scoreboard",
-  "!help — show this message",
+  "!trivia: ask a new question",
+  "!skip: reveal the answer and skip the current question",
+  "!score: show this chat's scoreboard",
+  "!help: show this message",
 ].join("\n");
 
 // Old-school IRC trivia bots (like the classic "!gama" games) ran one round
 // at a time per channel, took the first correct answer, and kept an
 // in-memory scoreboard for the session. This example reproduces that same
-// shape on top of Evergram chats — no persistence across restarts, just
+// shape on top of Evergram chats; no persistence across restarts, just
 // per-chat state held in memory while the process is alive.
 interface Round {
   answer: string; // normalized, for matching
@@ -37,7 +37,7 @@ function normalize(text: string): string {
 }
 
 // `identity` is already a "<chainFamily>:<address>" identityKey (same shape
-// as msg.sender) — prefixing it with "@" lets every Evergram client resolve
+// as msg.sender); prefixing it with "@" lets every Evergram client resolve
 // it to that person's own cached nickname locally (falling back to a
 // shortened address if uncached), the same way a composer-inserted @mention
 // renders. No need for this bot to fetch/cache nicknames itself anymore.
@@ -52,7 +52,7 @@ function scoreboard(chatId: string): string {
   return [...chatScores.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 10)
-    .map(([identity, points], i) => `${i + 1}. ${mention(identity)} — ${points}`)
+    .map(([identity, points], i) => `${i + 1}. ${mention(identity)}: ${points}`)
     .join("\n");
 }
 
@@ -64,7 +64,7 @@ function awardPoint(chatId: string, identity: string): number {
   return next;
 }
 
-// Ends the round without awarding a point — used by both the timeout and
+// Ends the round without awarding a point; used by both the timeout and
 // !skip. Always clears the timer first: !skip firing this manually must not
 // leave the timeout still pending to fire a second "time's up" later.
 function endRound(chatId: string): Round | undefined {
@@ -108,7 +108,7 @@ async function main() {
       const question = QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)];
       // setTimeout's callback runs outside bindEvent's wrapper, so a
       // rejected sendMessage here would otherwise become an unhandled
-      // rejection — route it through the same "error" event by hand.
+      // rejection; route it through the same "error" event by hand.
       const timer = setTimeout(() => {
         rounds.delete(msg.chatId);
         bot.core
@@ -140,7 +140,7 @@ async function main() {
     }
 
     const round = rounds.get(msg.chatId);
-    if (!round) return; // no open question — plain chat, ignore
+    if (!round) return; // no open question; plain chat, ignore
 
     if (normalize(text) === round.answer) {
       endRound(msg.chatId);

@@ -18,7 +18,7 @@ async function main() {
   );
 
   // Core reconnects and re-authenticates on its own after a dropped
-  // connection (gateway restart, network blip) — see Transport's backoff.
+  // connection (gateway restart, network blip); see Transport's backoff.
   // None of that is visible unless you listen for it: without these, a
   // gateway outage looks identical to "everything is fine and silent."
   bot.core.on("disconnected", () => console.warn("[echo-bot] disconnected from gateway"));
@@ -29,7 +29,7 @@ async function main() {
 
   bot.onMessage(async (msg, chat) => {
     if (!chat) return; // chat metadata not synced yet
-    if (msg.content.type !== "text") return; // skip audio/payment envelopes — nothing sensible to echo
+    if (msg.content.type !== "text") return; // skip audio/payment envelopes; nothing sensible to echo
     if (!msg.content.text) return; // decryption failed or empty message
 
     console.log(`[echo-bot] ${msg.sender} -> ${msg.content.text}`);

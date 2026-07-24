@@ -11,7 +11,7 @@ if (!WEBHOOK_URL) {
 }
 
 // Forwards every decrypted message this bot's account is part of to an
-// external HTTP endpoint — the bridge between Evergram and systems outside
+// external HTTP endpoint: the bridge between Evergram and systems outside
 // the protocol (a support queue, a logging pipeline, a Slack relay, etc).
 // The webhook receives plaintext, so whatever runs at WEBHOOK_URL must be
 // trusted with the same content the bot itself can read.

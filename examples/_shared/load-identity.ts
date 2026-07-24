@@ -15,7 +15,7 @@ interface StoredIdentity {
 }
 
 // The SDK deliberately does not persist keys for you (see README "Device
-// keys & backup" — there is no recovery path in the protocol if you lose
+// keys & backup": there is no recovery path in the protocol if you lose
 // these). This loads-or-creates a JSON file next to the example so running
 // it twice reuses the same wallet/device instead of orphaning chat history
 // on every restart. A real bot should use a safer secret store than a
