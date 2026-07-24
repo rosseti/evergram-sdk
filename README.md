@@ -130,7 +130,7 @@ anything beyond local/dev use.
 ## Device keys & backup
 
 **There is no key backup/recovery in this protocol today**, not an SDK
-limitation, an inherited one (the webapp client has the exact same gap).
+limitation but an inherited one (the webapp client has the exact same gap).
 `device.devicePrivHex` is an X25519 key generated once
 (`generateDeviceKeypair()`); every chat's symmetric key is sealed
 specifically for it. Lose it, and that bot's chat history becomes
