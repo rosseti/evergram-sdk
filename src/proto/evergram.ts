@@ -1158,6 +1158,14 @@ export interface Device {
    * Input on Auth/RegisterDevice.device; echoed back on every response.
    */
   platform: string;
+  /**
+   * Gateway-computed from its live WebSocket connection registry — never
+   * persisted/consensus-derived, so it reflects only this gateway node's own
+   * connections and is stamped in after the contract response comes back
+   * (see contractResponse.ts). Populated only in device-listing responses,
+   * same scope as status/revoked_at/revocation_epoch/last_seen_at above.
+   */
+  isOnline: boolean;
 }
 
 export interface RegisterDevice {
@@ -12941,7 +12949,16 @@ export const EditContent: MessageFns<EditContent> = {
 };
 
 function createBaseDevice(): Device {
-  return { deviceId: "", devicePubHex: "", status: "", revokedAt: 0, revocationEpoch: 0, lastSeenAt: 0, platform: "" };
+  return {
+    deviceId: "",
+    devicePubHex: "",
+    status: "",
+    revokedAt: 0,
+    revocationEpoch: 0,
+    lastSeenAt: 0,
+    platform: "",
+    isOnline: false,
+  };
 }
 
 export const Device: MessageFns<Device> = {
@@ -12966,6 +12983,9 @@ export const Device: MessageFns<Device> = {
     }
     if (message.platform !== "") {
       writer.uint32(58).string(message.platform);
+    }
+    if (message.isOnline !== false) {
+      writer.uint32(64).bool(message.isOnline);
     }
     return writer;
   },
@@ -13033,6 +13053,14 @@ export const Device: MessageFns<Device> = {
           message.platform = reader.string();
           continue;
         }
+        case 8: {
+          if (tag !== 64) {
+            break;
+          }
+
+          message.isOnline = reader.bool();
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -13071,6 +13099,11 @@ export const Device: MessageFns<Device> = {
         ? globalThis.Number(object.last_seen_at)
         : 0,
       platform: isSet(object.platform) ? globalThis.String(object.platform) : "",
+      isOnline: isSet(object.isOnline)
+        ? globalThis.Boolean(object.isOnline)
+        : isSet(object.is_online)
+        ? globalThis.Boolean(object.is_online)
+        : false,
     };
   },
 
@@ -13097,6 +13130,9 @@ export const Device: MessageFns<Device> = {
     if (message.platform !== "") {
       obj.platform = message.platform;
     }
+    if (message.isOnline !== false) {
+      obj.isOnline = message.isOnline;
+    }
     return obj;
   },
 
@@ -13112,6 +13148,7 @@ export const Device: MessageFns<Device> = {
     message.revocationEpoch = object.revocationEpoch ?? 0;
     message.lastSeenAt = object.lastSeenAt ?? 0;
     message.platform = object.platform ?? "";
+    message.isOnline = object.isOnline ?? false;
     return message;
   },
 };

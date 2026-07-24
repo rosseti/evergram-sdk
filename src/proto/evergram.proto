@@ -890,6 +890,13 @@ message Device {
   // platform: client self-declared (e.g. "Chrome · Ubuntu", "Terminal").
   // Input on Auth/RegisterDevice.device; echoed back on every response.
   string platform = 7;
+
+  // Gateway-computed from its live WebSocket connection registry — never
+  // persisted/consensus-derived, so it reflects only this gateway node's own
+  // connections and is stamped in after the contract response comes back
+  // (see contractResponse.ts). Populated only in device-listing responses,
+  // same scope as status/revoked_at/revocation_epoch/last_seen_at above.
+  bool is_online = 8;
 }
 
 message RegisterDevice {
