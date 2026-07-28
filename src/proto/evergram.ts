@@ -1881,6 +1881,9 @@ export interface UpdateChatRolesResponse {
 
 export interface UpgradeContract {
   bundle: string;
+  bundleSignature?: string | undefined;
+  bundlePublicKey?: string | undefined;
+  expiresAt?: number | undefined;
 }
 
 export interface UpgradeContractResponse {
@@ -21993,13 +21996,22 @@ export const UpdateChatRolesResponse: MessageFns<UpdateChatRolesResponse> = {
 };
 
 function createBaseUpgradeContract(): UpgradeContract {
-  return { bundle: "" };
+  return { bundle: "", bundleSignature: undefined, bundlePublicKey: undefined, expiresAt: undefined };
 }
 
 export const UpgradeContract: MessageFns<UpgradeContract> = {
   encode(message: UpgradeContract, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
     if (message.bundle !== "") {
       writer.uint32(10).string(message.bundle);
+    }
+    if (message.bundleSignature !== undefined) {
+      writer.uint32(18).string(message.bundleSignature);
+    }
+    if (message.bundlePublicKey !== undefined) {
+      writer.uint32(26).string(message.bundlePublicKey);
+    }
+    if (message.expiresAt !== undefined) {
+      writer.uint32(32).uint64(message.expiresAt);
     }
     return writer;
   },
@@ -22019,6 +22031,30 @@ export const UpgradeContract: MessageFns<UpgradeContract> = {
           message.bundle = reader.string();
           continue;
         }
+        case 2: {
+          if (tag !== 18) {
+            break;
+          }
+
+          message.bundleSignature = reader.string();
+          continue;
+        }
+        case 3: {
+          if (tag !== 26) {
+            break;
+          }
+
+          message.bundlePublicKey = reader.string();
+          continue;
+        }
+        case 4: {
+          if (tag !== 32) {
+            break;
+          }
+
+          message.expiresAt = longToNumber(reader.uint64());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -22029,13 +22065,39 @@ export const UpgradeContract: MessageFns<UpgradeContract> = {
   },
 
   fromJSON(object: any): UpgradeContract {
-    return { bundle: isSet(object.bundle) ? globalThis.String(object.bundle) : "" };
+    return {
+      bundle: isSet(object.bundle) ? globalThis.String(object.bundle) : "",
+      bundleSignature: isSet(object.bundleSignature)
+        ? globalThis.String(object.bundleSignature)
+        : isSet(object.bundle_signature)
+        ? globalThis.String(object.bundle_signature)
+        : undefined,
+      bundlePublicKey: isSet(object.bundlePublicKey)
+        ? globalThis.String(object.bundlePublicKey)
+        : isSet(object.bundle_public_key)
+        ? globalThis.String(object.bundle_public_key)
+        : undefined,
+      expiresAt: isSet(object.expiresAt)
+        ? globalThis.Number(object.expiresAt)
+        : isSet(object.expires_at)
+        ? globalThis.Number(object.expires_at)
+        : undefined,
+    };
   },
 
   toJSON(message: UpgradeContract): unknown {
     const obj: any = {};
     if (message.bundle !== "") {
       obj.bundle = message.bundle;
+    }
+    if (message.bundleSignature !== undefined) {
+      obj.bundleSignature = message.bundleSignature;
+    }
+    if (message.bundlePublicKey !== undefined) {
+      obj.bundlePublicKey = message.bundlePublicKey;
+    }
+    if (message.expiresAt !== undefined) {
+      obj.expiresAt = Math.round(message.expiresAt);
     }
     return obj;
   },
@@ -22046,6 +22108,9 @@ export const UpgradeContract: MessageFns<UpgradeContract> = {
   fromPartial<I extends Exact<DeepPartial<UpgradeContract>, I>>(object: I): UpgradeContract {
     const message = createBaseUpgradeContract();
     message.bundle = object.bundle ?? "";
+    message.bundleSignature = object.bundleSignature ?? undefined;
+    message.bundlePublicKey = object.bundlePublicKey ?? undefined;
+    message.expiresAt = object.expiresAt ?? undefined;
     return message;
   },
 };
