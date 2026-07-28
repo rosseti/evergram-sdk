@@ -111,6 +111,10 @@ const MAX_PENDING_CHATS = 200;
 const MAX_PENDING_CHAT_REQUESTS = 500;
 const MAX_PENDING_GROUP_INVITES = 500;
 
+// Caps how many next_cursor pages syncChats() will follow automatically
+// per boot/explicit sync (see syncChatsPageCount below).
+const MAX_SYNC_CHATS_PAGES = 50;
+
 // Mirrors the OS family naming the webapp's platform-label.ts already uses
 // for the "{Browser} · {OS}" convention (Preferences > Devices), so the
 // device owner sees a consistent OS name regardless of which client
@@ -384,6 +388,12 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // ~50 days to wrap, long past any single request's timeout window.
   private nextRequestId = 1;
   private readonly chats = new Map<string, ChatInfo>();
+  // Defensive circuit breaker for syncChats' cursor-follow loop (handlePush
+  // below) — the gateway sits between us and the contract and is untrusted
+  // transport, so a misbehaving gateway that keeps echoing a non-empty
+  // next_cursor should not be able to put a bot into an unbounded request
+  // loop.
+  private syncChatsPageCount = 0;
   private readonly symKeys = new Map<string, Uint8Array>();
   private readonly pendingEnvelopes = new Map<string, Envelope[]>();
   // Insertion-ordered dedup set for decryptAndEmit — see
@@ -493,8 +503,9 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       this.authenticated = false;
       // Reject every in-flight request immediately instead of leaving each
       // one to hang until its own requestTimeoutMs timer fires (up to 90s
-      // for some calls) — lets requestWithReauth retry as soon as the
-      // transport reconnects. Mirrors the webapp client's inflightAborters
+      // for some calls). Callers must catch EvergramConnectionError
+      // themselves; only EvergramAuthError triggers an automatic retry in
+      // requestWithReauth. Mirrors the webapp client's inflightAborters
       // behavior in evergram-client.ts's onClose handler.
       for (const entry of this.pendingRequests) {
         clearTimeout(entry.timer);
@@ -1215,6 +1226,9 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // (see handlePush below) — there is no single request/response pair to
   // await here in the real protocol.
   syncChats(cursor?: string): void {
+    if (!cursor) {
+      this.syncChatsPageCount = 0;
+    }
     const knownVersions: Record<string, number> = {};
     const knownMetaVersions: Record<string, number> = {};
     for (const [chatId, chat] of this.chats.entries()) {
@@ -1896,9 +1910,22 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     // with a large chat history otherwise produces one unbounded response
     // that can get truncated in transit. Immediately request the next page;
     // knownVersions/knownMetaVersions are recomputed fresh each call, same
-    // as any other syncChats() invocation.
+    // as any other syncChats() invocation. Capped by MAX_SYNC_CHATS_PAGES
+    // (see syncChatsPageCount) so a misbehaving gateway can't loop this
+    // forever.
     if (msg.queryChatsResponse?.nextCursor) {
-      this.syncChats(msg.queryChatsResponse.nextCursor);
+      if (this.syncChatsPageCount < MAX_SYNC_CHATS_PAGES) {
+        this.syncChatsPageCount++;
+        this.syncChats(msg.queryChatsResponse.nextCursor);
+      } else {
+        this.emit(
+          "error",
+          new EvergramConnectionError(
+            "sync_chats_page_limit",
+            `syncChats aborted after ${MAX_SYNC_CHATS_PAGES} pages`,
+          ),
+        );
+      }
     }
 
     // Boot sync: silently merge, mirroring how queryChatsResponse.results
