@@ -40,6 +40,13 @@ export class EvergramDeviceRevokedError extends EvergramError {}
 // this is what surfaces if that single retry still doesn't resolve it.
 export class EvergramRotationError extends EvergramError {}
 
+// Wallet account isn't activated on the Xahau network yet (below the
+// reserve requirement) — not a bug, just a "fund the account first" case.
+// Its own class, and errorFromCode below gives it a human default message,
+// since the bare code otherwise reads as a crash to anyone running an
+// example for the first time.
+export class EvergramInsufficientBalanceError extends EvergramError {}
+
 const AUTH_CODES = new Set([
   "NOT_AUTHENTICATED",
   "invalid_authorization",
@@ -82,6 +89,14 @@ const ACCESS_DENIED_CODES = new Set([
 ]);
 
 const RESTRICTED_CODES = new Set(["ACCOUNT_RESTRICTED", "account_restricted"]);
+
+const INSUFFICIENT_BALANCE_CODES = new Set(["insufficient_account_balance"]);
+
+// The gateway's own message for this code (when it sends one at all) is
+// just the code again, so replace it outright rather than falling back to
+// it like the other branches do.
+const INSUFFICIENT_BALANCE_MESSAGE =
+  "Insufficient funds for activation. To use the SDK with a wallet account, you need at least 5,000 XAH on the Xahau network.";
 
 const NOT_FOUND_CODES = new Set(["CHAT_NOT_FOUND", "chat_not_found", "device_not_registered"]);
 
@@ -127,6 +142,8 @@ export function errorFromCode(code: string, message?: string): EvergramError {
   if (RATE_LIMIT_CODES.has(code)) return new EvergramRateLimitError(code, message);
   if (ACCESS_DENIED_CODES.has(code)) return new EvergramAccessDeniedError(code, message);
   if (RESTRICTED_CODES.has(code)) return new EvergramRestrictedError(code, message);
+  if (INSUFFICIENT_BALANCE_CODES.has(code))
+    return new EvergramInsufficientBalanceError(code, INSUFFICIENT_BALANCE_MESSAGE);
   if (NOT_FOUND_CODES.has(code)) return new EvergramNotFoundError(code, message);
   if (VALIDATION_CODES.has(code)) return new EvergramValidationError(code, message);
   return new EvergramError(code, message);

@@ -71,6 +71,7 @@ export {
   EvergramConnectionError,
   EvergramDeviceRevokedError,
   EvergramRotationError,
+  EvergramInsufficientBalanceError,
 } from "./errors.js";
 
 export * from "./proto/evergram.js";
