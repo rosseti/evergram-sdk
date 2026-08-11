@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { EvergramBot } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { logBotError } from "../_shared/log-error.js";
 import { QUESTIONS } from "./questions.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
@@ -82,7 +83,6 @@ async function main() {
   const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "TriviaBot" });
-  bot.core.on("error", (err) => console.error("[trivia-bot] error:", err));
   bot.core.on("disconnected", () => console.warn("[trivia-bot] disconnected from gateway"));
   bot.core.on("reconnecting", (attempt) =>
     console.warn(`[trivia-bot] reconnecting (attempt ${attempt})`),
@@ -157,9 +157,15 @@ async function main() {
 
   await bot.start();
   console.log(`[trivia-bot] online as ${wallet.address}`);
+  // Registered only after a successful start: a failure during start()
+  // already rejects the promise above (see main().catch below), so an
+  // "error" listener attached earlier would log that same failure twice.
+  // From here on it only reports background issues (dropped connections,
+  // rate limits, etc.) that happen after the bot is already running.
+  bot.core.on("error", (err) => logBotError("[trivia-bot] error:", err));
 }
 
 main().catch((err) => {
-  console.error("[trivia-bot] fatal:", err);
+  logBotError("[trivia-bot] fatal:", err);
   process.exit(1);
 });

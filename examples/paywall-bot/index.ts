@@ -8,6 +8,7 @@ import {
   identityKey,
 } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { logBotError } from "../_shared/log-error.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const PAYWALL_CHAT_ID = process.env.PAYWALL_CHAT_ID;
@@ -43,7 +44,6 @@ async function main() {
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "PaywallBot" });
   const selfIdentityKey = identityKey({ chainFamily: ChainFamily.XRPL, address: wallet.address });
 
-  bot.core.on("error", (err) => console.error("[paywall-bot] error:", err));
   bot.core.on("disconnected", () => console.warn("[paywall-bot] disconnected from gateway"));
   bot.core.on("reconnecting", (attempt) =>
     console.warn(`[paywall-bot] reconnecting (attempt ${attempt})`),
@@ -149,10 +149,14 @@ async function main() {
   });
 
   await bot.start();
+  // Registered only after a successful start: a failure during start()
+  // already rejects the promise above (see main().catch below), so an
+  // "error" listener attached earlier would log that same failure twice.
+  bot.core.on("error", (err) => logBotError("[paywall-bot] error:", err));
   console.log(`[paywall-bot] online as ${wallet.address}, gating chat ${PAYWALL_CHAT_ID}`);
 }
 
 main().catch((err) => {
-  console.error("[paywall-bot] fatal:", err);
+  logBotError("[paywall-bot] fatal:", err);
   process.exit(1);
 });

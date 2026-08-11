@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { EvergramBot } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { logBotError } from "../_shared/log-error.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 
@@ -9,7 +10,6 @@ async function main() {
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device, name: "EchoBot :)" });
 
-  bot.core.on("error", (err) => console.error("[echo-bot] error:", err));
   bot.core.on("restricted", (event) =>
     console.warn("[echo-bot] account restricted:", event.reason),
   );
@@ -37,10 +37,14 @@ async function main() {
   });
 
   await bot.start();
+  // Registered only after a successful start: a failure during start()
+  // already rejects the promise above (see main().catch below), so an
+  // "error" listener attached earlier would log that same failure twice.
+  bot.core.on("error", (err) => logBotError("[echo-bot] error:", err));
   console.log(`[echo-bot] online as ${wallet.address}`);
 }
 
 main().catch((err) => {
-  console.error("[echo-bot] fatal:", err);
+  logBotError("[echo-bot] fatal:", err);
   process.exit(1);
 });

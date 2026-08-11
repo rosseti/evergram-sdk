@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { EvergramBot } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { logBotError } from "../_shared/log-error.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 
@@ -34,7 +35,6 @@ async function main() {
   const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device });
-  bot.core.on("error", (err) => console.error("[moderation-bot] error:", err));
   bot.core.on("disconnected", () => console.warn("[moderation-bot] disconnected from gateway"));
   bot.core.on("reconnecting", (attempt) =>
     console.warn(`[moderation-bot] reconnecting (attempt ${attempt})`),
@@ -74,10 +74,14 @@ async function main() {
   });
 
   await bot.start();
+  // Registered only after a successful start: a failure during start()
+  // already rejects the promise above (see main().catch below), so an
+  // "error" listener attached earlier would log that same failure twice.
+  bot.core.on("error", (err) => logBotError("[moderation-bot] error:", err));
   console.log(`[moderation-bot] online as ${wallet.address}`);
 }
 
 main().catch((err) => {
-  console.error("[moderation-bot] fatal:", err);
+  logBotError("[moderation-bot] fatal:", err);
   process.exit(1);
 });

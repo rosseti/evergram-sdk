@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { bytesToHex, EvergramBot, hexToBytes } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { logBotError } from "../_shared/log-error.js";
 import {
   loadPersistedVisitorSessions,
   removePersistedVisitorSession,
@@ -32,7 +33,6 @@ async function main() {
     bot.core.registerVisitorSession({ ...session, symKey: hexToBytes(session.symKeyHex) });
   }
 
-  bot.core.on("error", (err) => console.error("[visitor-bot] error:", err));
   bot.core.on("disconnected", () => console.warn("[visitor-bot] disconnected from gateway"));
   bot.core.on("reconnecting", (attempt) =>
     console.warn(`[visitor-bot] reconnecting (attempt ${attempt})`),
@@ -82,6 +82,10 @@ async function main() {
   });
 
   await bot.start();
+  // Registered only after a successful start: a failure during start()
+  // already rejects the promise above (see main().catch below), so an
+  // "error" listener attached earlier would log that same failure twice.
+  bot.core.on("error", (err) => logBotError("[visitor-bot] error:", err));
   console.log(`[visitor-bot] online as ${wallet.address}`);
 
   // Assumes a widget already exists for this identity (create one at
@@ -100,6 +104,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[visitor-bot] fatal:", err);
+  logBotError("[visitor-bot] fatal:", err);
   process.exit(1);
 });

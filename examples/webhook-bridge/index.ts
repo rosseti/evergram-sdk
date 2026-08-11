@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { EvergramBot } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
+import { logBotError } from "../_shared/log-error.js";
 
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
@@ -19,7 +20,6 @@ async function main() {
   const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
 
   const bot = new EvergramBot({ url: GATEWAY_URL, wallet, device });
-  bot.core.on("error", (err) => console.error("[webhook-bridge] error:", err));
   bot.core.on("disconnected", () => console.warn("[webhook-bridge] disconnected from gateway"));
   bot.core.on("reconnecting", (attempt) =>
     console.warn(`[webhook-bridge] reconnecting (attempt ${attempt})`),
@@ -52,10 +52,14 @@ async function main() {
   });
 
   await bot.start();
+  // Registered only after a successful start: a failure during start()
+  // already rejects the promise above (see main().catch below), so an
+  // "error" listener attached earlier would log that same failure twice.
+  bot.core.on("error", (err) => logBotError("[webhook-bridge] error:", err));
   console.log(`[webhook-bridge] online as ${wallet.address}, forwarding to ${WEBHOOK_URL}`);
 }
 
 main().catch((err) => {
-  console.error("[webhook-bridge] fatal:", err);
+  logBotError("[webhook-bridge] fatal:", err);
   process.exit(1);
 });
