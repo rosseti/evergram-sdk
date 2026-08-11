@@ -6,6 +6,9 @@ import { QUESTIONS } from "./questions.js";
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const ROUND_TIMEOUT_MS = 30_000;
 
+// Log once at module load so a missing/wrong .env is obvious before connect fails.
+console.log(`[trivia-bot] gateway: ${GATEWAY_URL}`);
+
 const HELP_TEXT = [
   "!trivia: ask a new question",
   "!skip: reveal the answer and skip the current question",
