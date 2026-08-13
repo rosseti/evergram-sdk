@@ -630,7 +630,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       },
     });
 
-    return this.requestWithReauth(msg, "registerDeviceResponse");
+    return this.requestWithReauth(msg, "registerDeviceResponse", 35000);
   }
 
   // No capability/tier gate on the contract side — any authenticated
@@ -1269,7 +1269,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.requestWithReauth(
       msg,
       "createWidgetResponse",
-      undefined,
+      35000,
       (v) => v.widget?.name === name,
     );
   }
@@ -1279,7 +1279,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.requestWithReauth(
       msg,
       "deleteWidgetResponse",
-      undefined,
+      35000,
       (v) => v.widgetId === widgetId,
     );
   }
@@ -1289,7 +1289,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.requestWithReauth(
       msg,
       "updateWidgetResponse",
-      undefined,
+      35000,
       (v) => v.widget?.widgetId === widgetId,
     );
   }
@@ -1315,7 +1315,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.requestWithReauth(
       msg,
       "updateWidgetConfigResponse",
-      undefined,
+      35000,
       (v) => v.widgetId === widgetId,
     );
   }
