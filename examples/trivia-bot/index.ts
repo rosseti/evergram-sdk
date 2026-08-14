@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { EvergramBot } from "../../src/index.js";
+import { EvergramBot, typingDelayMs } from "../../src/index.js";
 import { loadOrCreateIdentity } from "../_shared/load-identity.js";
 import { logBotError } from "../_shared/log-error.js";
 import { QUESTIONS } from "./questions.js";
@@ -25,7 +25,12 @@ const HELP_TEXT = [
 interface Round {
   answer: string; // normalized, for matching
   rawAnswer: string; // original casing, for the reveal message
-  timer: ReturnType<typeof setTimeout>;
+  // Cancels whatever timer(s) are currently pending for this round — the
+  // outer ROUND_TIMEOUT_MS wait, or (once it fires) the nested
+  // typingDelayMs wait before the reveal actually goes out. A single
+  // function instead of a bare timer handle so !skip can't race the
+  // reveal: see scheduleReveal below.
+  cancel: () => void;
 }
 
 const rounds = new Map<string, Round>(); // chatId -> active question
@@ -69,14 +74,54 @@ function awardPoint(chatId: string, identity: string): number {
 }
 
 // Ends the round without awarding a point; used by both the timeout and
-// !skip. Always clears the timer first: !skip firing this manually must not
-// leave the timeout still pending to fire a second "time's up" later.
+// !skip. Always cancels first: !skip firing this manually must not leave
+// the reveal (still possibly mid-typing-delay) pending to fire on its own
+// afterward — see scheduleReveal.
 function endRound(chatId: string): Round | undefined {
   const round = rounds.get(chatId);
   if (!round) return undefined;
-  clearTimeout(round.timer);
+  round.cancel();
   rounds.delete(chatId);
   return round;
+}
+
+// Schedules the "time's up" reveal ROUND_TIMEOUT_MS from now, and returns a
+// cancel() that unwinds whichever stage is currently pending. Deliberately
+// does NOT delete `rounds.get(chatId)` until the reveal message has
+// actually been sent — replyWithTyping's typing-indicator delay means the
+// gap between "timer fires" and "message sent" can be up to ~2s, and this
+// round must stay "open" (so !trivia/!skip see it) for that whole window.
+// Otherwise a fast !trivia right as the timer fires opens a new round
+// before this one's reveal is even on the wire, and the stale reveal for
+// the old question lands in the middle of the new one.
+function scheduleReveal(
+  bot: EvergramBot,
+  chatId: string,
+  question: { question: string; answer: string },
+): () => void {
+  // Two separately-cancellable stages, not a single sendTypedMessage() —
+  // that call's internal typing-delay wait isn't externally abortable, and
+  // a !skip landing mid-wait must be able to stop the reveal from going
+  // out at all, not just clean up bookkeeping after the fact.
+  let innerTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const outerTimer = setTimeout(() => {
+    const reveal = `⏰ Time's up! The answer was: ${question.answer}`;
+    bot.trySendTyping(chatId, true);
+    innerTimer = setTimeout(() => {
+      bot.trySendTyping(chatId, false);
+      // setTimeout's callback runs outside bindEvent's wrapper, so a
+      // rejected sendMessage here would otherwise become an unhandled
+      // rejection; route it through the same "error" event by hand.
+      bot.core.sendMessage(chatId, reveal).catch((err) => bot.core.emit("error", err));
+      rounds.delete(chatId);
+    }, typingDelayMs(reveal));
+  }, ROUND_TIMEOUT_MS);
+
+  return () => {
+    clearTimeout(outerTimer);
+    if (innerTimer) clearTimeout(innerTimer);
+  };
 }
 
 async function main() {
@@ -97,48 +142,43 @@ async function main() {
     const command = text.toLowerCase();
 
     if (command === "!help") {
-      await bot.reply(msg, HELP_TEXT);
+      await bot.replyWithTyping(msg, HELP_TEXT);
       return;
     }
 
     if (command === "!trivia") {
       const existing = rounds.get(msg.chatId);
       if (existing) {
-        await bot.reply(msg, "There's already a question open! Answer it, or use !skip.");
+        await bot.replyWithTyping(msg, "There's already a question open! Answer it, or use !skip.");
         return;
       }
 
       const question = QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)];
-      // setTimeout's callback runs outside bindEvent's wrapper, so a
-      // rejected sendMessage here would otherwise become an unhandled
-      // rejection; route it through the same "error" event by hand.
-      const timer = setTimeout(() => {
-        rounds.delete(msg.chatId);
-        bot.core
-          .sendMessage(msg.chatId, `⏰ Time's up! The answer was: ${question.answer}`)
-          .catch((err) => bot.core.emit("error", err));
-      }, ROUND_TIMEOUT_MS);
+      const cancel = scheduleReveal(bot, msg.chatId, question);
       rounds.set(msg.chatId, {
         answer: normalize(question.answer),
         rawAnswer: question.answer,
-        timer,
+        cancel,
       });
-      await bot.reply(msg, `🎲 ${question.question} (${ROUND_TIMEOUT_MS / 1000}s to answer)`);
+      await bot.replyWithTyping(
+        msg,
+        `🎲 ${question.question} (${ROUND_TIMEOUT_MS / 1000}s to answer)`,
+      );
       return;
     }
 
     if (command === "!skip") {
       const round = endRound(msg.chatId);
       if (!round) {
-        await bot.reply(msg, "No question is open right now. Ask one with !trivia.");
+        await bot.replyWithTyping(msg, "No question is open right now. Ask one with !trivia.");
         return;
       }
-      await bot.reply(msg, `⏭️ Skipped. The answer was: ${round.rawAnswer}`);
+      await bot.replyWithTyping(msg, `⏭️ Skipped. The answer was: ${round.rawAnswer}`);
       return;
     }
 
     if (command === "!score") {
-      await bot.reply(msg, `🏆 Scoreboard:\n${scoreboard(msg.chatId)}`);
+      await bot.replyWithTyping(msg, `🏆 Scoreboard:\n${scoreboard(msg.chatId)}`);
       return;
     }
 
@@ -148,7 +188,7 @@ async function main() {
     if (normalize(text) === round.answer) {
       endRound(msg.chatId);
       const points = awardPoint(msg.chatId, msg.sender);
-      await bot.reply(
+      await bot.replyWithTyping(
         msg,
         `✅ Correct, ${mention(msg.sender)}! You now have ${points} point(s). Ask for another with !trivia.`,
       );

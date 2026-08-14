@@ -33,7 +33,7 @@ async function main() {
     if (!msg.content.text) return; // decryption failed or empty message
 
     console.log(`[echo-bot] ${msg.sender} -> ${msg.content.text}`);
-    await bot.reply(msg, `Echo: ${msg.content.text}`);
+    await bot.replyWithTyping(msg, `Echo: ${msg.content.text}`);
   });
 
   await bot.start();

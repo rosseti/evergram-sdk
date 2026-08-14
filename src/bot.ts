@@ -63,6 +63,8 @@ export interface VisitorSessionHandle {
   origin: string;
   /** Reply in this conversation. sender defaults to this bot's own profile nickname. */
   reply(text: string, sender?: string): EphemeralTextEvent;
+  /** Same as reply(), but toggles the typing indicator first, scaled to the reply's length — see EvergramBot.replyWithTyping. */
+  replyWithTyping(text: string, sender?: string): Promise<EphemeralTextEvent>;
   react(msgId: string, emoji: string | null): void;
   edit(msgId: string, text: string): EphemeralEditEvent;
   remove(msgId: string): EphemeralRemoveEvent;
@@ -91,9 +93,28 @@ function buildVisitorSessionHandle(
   core: EvergramCore,
   meta: { roomToken: string; widgetId: string; visitorLabel: string; origin: string },
 ): VisitorSessionHandle {
+  // Mirrors EvergramBot's own trySendTyping: sendVisitorTyping is
+  // cosmetic/synchronous and can throw on its own (room closed/expired
+  // mid-delay) independently of whether the reply itself would still go
+  // through — swallow and surface via "error" instead of letting it abort
+  // replyWithTyping below.
+  const tryVisitorTyping = (isTyping: boolean) => {
+    try {
+      core.sendVisitorTyping(meta.roomToken, isTyping);
+    } catch (err) {
+      core.emit("error", err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
   return {
     ...meta,
     reply: (text, sender) => core.sendVisitorMessage(meta.roomToken, text, sender),
+    replyWithTyping: async (text, sender) => {
+      tryVisitorTyping(true);
+      await new Promise((resolve) => setTimeout(resolve, typingDelayMs(text)));
+      tryVisitorTyping(false);
+      return core.sendVisitorMessage(meta.roomToken, text, sender);
+    },
     react: (msgId, emoji) => core.reactToVisitorMessage(meta.roomToken, msgId, emoji),
     edit: (msgId, text) => core.editVisitorMessage(meta.roomToken, msgId, text),
     remove: (msgId) => core.removeVisitorMessage(meta.roomToken, msgId),
@@ -163,6 +184,18 @@ type VisitorKickedHandler = (event: EvergramVisitorKicked) => void | Promise<voi
 type JoinRequestHandler = (req: JoinRequestHandle) => void | Promise<void>;
 type ChatRequestHandler = (req: ChatRequestHandle) => void | Promise<void>;
 type GroupInviteHandler = (req: GroupInviteHandle) => void | Promise<void>;
+
+// Rough typing speed for a human replying on a phone (~15 chars/sec),
+// clamped so a one-word reply doesn't feel instant and a long reveal
+// doesn't stall a chat for multiple seconds. sendTyping is rate-limited
+// server-side to 1/2s per identity+device, well under what one
+// typing:true/typing:false pair per reply needs. Exported so callers that
+// can't use replyWithTyping directly (e.g. driving sendTyping/sendMessage
+// by hand from a setTimeout callback, outside bindEvent's error handling)
+// can still pace themselves the same way.
+export function typingDelayMs(text: string): number {
+  return Math.min(2000, Math.max(500, text.length * 35));
+}
 
 export interface EvergramBotOptions extends EvergramCoreOptions {
   /**
@@ -330,6 +363,48 @@ export class EvergramBot {
 
   reply(msg: EvergramChatMessage, text: string) {
     return this.core.sendMessage(msg.chatId, text);
+  }
+
+  // Same as reply(), but toggles the "typing…" indicator first for a
+  // duration scaled to the reply's length, so the bot reads as composing a
+  // response rather than instant-pinging one back. Only meant for use
+  // inside an onX handler (see bindEvent), which routes a rejected promise
+  // to the core's "error" event automatically.
+  replyWithTyping(msg: EvergramChatMessage, text: string): Promise<void> {
+    return this.sendTypedMessage(msg.chatId, text);
+  }
+
+  // The chatId-keyed primitive replyWithTyping() is built on — for callers
+  // that don't have a live EvergramChatMessage on hand, e.g. a bot's own
+  // timer-driven message (a round timeout, a scheduled reminder) rather
+  // than a direct reply. Exposed publicly so those callers can reuse this
+  // instead of re-implementing the typing-indicator dance by hand.
+  //
+  // sendTyping() is cosmetic and synchronous — it can throw on its own
+  // (e.g. the connection drops mid-delay, between the "typing" and
+  // "stopped typing" calls) independently of whether the message itself
+  // would still go through. Swallow that and surface it via "error"
+  // instead of letting it abort the send; the message itself is the part
+  // that matters and gets to fail on its own terms (rejects normally).
+  async sendTypedMessage(chatId: string, text: string): Promise<void> {
+    this.trySendTyping(chatId, true);
+    await new Promise((resolve) => setTimeout(resolve, typingDelayMs(text)));
+    this.trySendTyping(chatId, false);
+    await this.core.sendMessage(chatId, text);
+  }
+
+  // Public (not just an internal used by sendTypedMessage above): callers
+  // that need to interleave the typing indicator with their own
+  // cancellable timers — e.g. a delayed reveal that a later command must
+  // be able to abort mid-wait — can't go through sendTypedMessage (its
+  // wait isn't externally cancellable) and need this swallow-and-emit
+  // guard directly instead of reimplementing it.
+  trySendTyping(chatId: string, isTyping: boolean): void {
+    try {
+      this.core.sendTyping(chatId, isTyping);
+    } catch (err) {
+      this.core.emit("error", err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   // Fires once per anonymous widget visitor conversation, when they send

@@ -61,20 +61,20 @@ async function main() {
     console.warn(`[visitor-bot] room ${roomToken} closed (ended, or claimed by another device)`);
   });
 
-  bot.onVisitorRoomRequested((handle, firstMessage) => {
+  bot.onVisitorRoomRequested(async (handle, firstMessage) => {
     console.log(
       `[visitor-bot] room ${handle.roomToken} opened by "${handle.visitorLabel}" from ${handle.origin}`,
     );
     if (firstMessage?.text) {
       console.log(`[visitor-bot] ${handle.visitorLabel} -> ${firstMessage.text}`);
-      handle.reply(`Echo: ${firstMessage.text}`);
+      await handle.replyWithTyping(`Echo: ${firstMessage.text}`);
     }
   });
 
-  bot.onVisitorMessage((msg, handle) => {
+  bot.onVisitorMessage(async (msg, handle) => {
     if (!handle) return; // room already closed/expired server-side
     console.log(`[visitor-bot] ${handle.visitorLabel} -> ${msg.text}`);
-    handle.reply(`Echo: ${msg.text}`);
+    await handle.replyWithTyping(`Echo: ${msg.text}`);
   });
 
   bot.onVisitorRoomTimedOut(({ roomToken }) => {

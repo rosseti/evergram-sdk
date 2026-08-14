@@ -43,7 +43,7 @@ export type {
 
 export { buildPaymentRequest, buildPaymentReceipt, buildAudioMessage } from "./message-builders.js";
 
-export { EvergramBot } from "./bot.js";
+export { EvergramBot, typingDelayMs } from "./bot.js";
 export type {
   JoinRequestHandle,
   ChatRequestHandle,

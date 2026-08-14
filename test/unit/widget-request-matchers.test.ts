@@ -72,6 +72,12 @@ describe("widget request matchers", () => {
   beforeEach(() => {
     transport = new FakeTransport();
     core = makeCore(transport);
+    // These tests exercise request-matcher disambiguation directly, bypassing
+    // the real auth handshake — mark the connection authenticated so the
+    // session-readiness gate in request() (assertReadyToSend) doesn't reject
+    // the calls under test. See connect-error-safety.test.ts and friends for
+    // the same "poke the private flag" pattern used elsewhere in this suite.
+    (core as any).authenticated = true;
   });
 
   it("getWidgetInfo: two concurrent calls for different widgets don't cross-resolve when responses arrive out of order", async () => {

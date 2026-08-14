@@ -82,7 +82,7 @@ async function main() {
 
     if (msg.content.type === "payment_receipt") {
       if (verified.has(sender)) {
-        await bot.reply(msg, "You're already in, no need to pay again.");
+        await bot.replyWithTyping(msg, "You're already in, no need to pay again.");
         return;
       }
 
@@ -99,7 +99,7 @@ async function main() {
       // see top-of-file comment), which would otherwise strand a legitimate
       // payer's receipt against an empty map.
       if (msg.content.requestId !== expectedId && !(!expectedId && looksRight)) {
-        await bot.reply(
+        await bot.replyWithTyping(
           msg,
           "That payment doesn't match an outstanding request. DM me to get a fresh one.",
         );
@@ -114,13 +114,13 @@ async function main() {
 
       try {
         await bot.core.addParticipant(PAYWALL_CHAT_ID!, sender);
-        await bot.reply(msg, "Payment received, you're in!");
+        await bot.replyWithTyping(msg, "Payment received, you're in!");
       } catch (err) {
         if (err instanceof EvergramAccessDeniedError) {
           console.error(
             `[paywall-bot] paid but couldn't add ${sender}: bot lacks admin rights on ${PAYWALL_CHAT_ID}`,
           );
-          await bot.reply(
+          await bot.replyWithTyping(
             msg,
             "Payment received, but I couldn't add you automatically. An admin will follow up.",
           );
@@ -133,12 +133,12 @@ async function main() {
 
     // Text/audio/anything else.
     if (verified.has(sender)) {
-      await bot.reply(msg, "You're already in the group, nothing more to do.");
+      await bot.replyWithTyping(msg, "You're already in the group, nothing more to do.");
       return;
     }
 
     if (pendingRequests.has(sender)) {
-      await bot.reply(
+      await bot.replyWithTyping(
         msg,
         `Still waiting on payment of ${PAYWALL_AMOUNT} ${PAYWALL_CURRENCY}. Send the receipt when you're done.`,
       );

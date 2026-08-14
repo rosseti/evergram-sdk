@@ -83,14 +83,14 @@ async function main() {
     if (action !== undefined && target) {
       const resp = await handle.moderate(action, target);
       if (!(resp as { status?: { ok: boolean } }).status?.ok) {
-        handle.reply(
+        await handle.replyWithTyping(
           `Couldn't ${command.slice(1)} ${target}. Are they in the channel and are you an op?`,
         );
       }
       return;
     }
 
-    handle.reply(`Echo: ${msg.text}`);
+    await handle.replyWithTyping(`Echo: ${msg.text}`);
   });
 
   await bot.start();

@@ -847,7 +847,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       },
     });
 
-    this.transport.send(ClientMessage.create({ envelope: env }));
+    this.sendEnvelope(env);
 
     this.trackPendingSend(msgId, chatId, text, opts);
 
@@ -950,7 +950,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       typing: { isTyping },
     });
 
-    this.transport.send(ClientMessage.create({ envelope: env }));
+    this.sendEnvelope(env);
   }
 
   async reactToMessage(chatId: string, msgId: string, emoji: string) {
@@ -968,7 +968,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       react: { msgId, ciphertext: encrypted.ciphertext, nonce: encrypted.nonce, removed: false },
     });
 
-    this.transport.send(ClientMessage.create({ envelope: env }));
+    this.sendEnvelope(env);
 
     return { chatId, msgId, ts: env.ts };
   }
@@ -986,7 +986,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       react: { msgId, ciphertext: "", nonce: "", removed: true },
     });
 
-    this.transport.send(ClientMessage.create({ envelope: env }));
+    this.sendEnvelope(env);
 
     return { chatId, msgId, ts: env.ts };
   }
@@ -1028,7 +1028,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       },
     });
 
-    this.transport.send(ClientMessage.create({ envelope: env }));
+    this.sendEnvelope(env);
 
     return { chatId, msgId, ts: env.ts };
   }
@@ -1051,7 +1051,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       edit: { msgId, ciphertext: "", nonce: "", editedAt: Date.now(), removed: true },
     });
 
-    this.transport.send(ClientMessage.create({ envelope: env }));
+    this.sendEnvelope(env);
 
     return { chatId, msgId, ts: env.ts };
   }
@@ -1224,7 +1224,11 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // replies asynchronously via one or more push-style queryChatsResponse
   // messages, processed the same way as unsolicited key-rotation broadcasts
   // (see handlePush below) — there is no single request/response pair to
-  // await here in the real protocol.
+  // await here in the real protocol. Never throws — including if called
+  // before this connection has finished authenticating (see the "call
+  // syncChats() or wait for the chat to be established" guidance below);
+  // failures surface via the "error" event instead, same as every other
+  // fire-and-forget send on this class.
   syncChats(cursor?: string): void {
     if (!cursor) {
       this.syncChatsPageCount = 0;
@@ -1244,11 +1248,22 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       knownMetaVersions[chatId] = chat.metaVersion ? Number(chat.metaVersion) : 1;
     }
 
-    this.transport.send(
-      ClientMessage.create({
-        queryChats: { knownVersions, knownMetaVersions, cursor: cursor || "" },
-      }),
-    );
+    const msg = ClientMessage.create({
+      queryChats: { knownVersions, knownMetaVersions, cursor: cursor || "" },
+    });
+    // Documented (and typed) as void/non-throwing, same contract as
+    // sendRelayMessage above — callers, including bot authors following the
+    // "call syncChats() or wait for the chat to be established" guidance in
+    // the error messages above, don't wrap this in a try/catch. Swallow and
+    // surface via the normal "error" event instead of throwing synchronously
+    // out of an arbitrary caller during the brief window between a dropped
+    // connection and re-authenticate() completing.
+    try {
+      this.assertReadyToSend(msg);
+      this.transport.send(msg);
+    } catch (err) {
+      this.emit("error", err as Error);
+    }
   }
 
   getChat(chatId: string): ChatInfo | undefined {
@@ -1442,15 +1457,24 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   // evergram-client.ts — no request/response pair on the wire for any
   // RelayMessage kind, the gateway just relays it onward (or doesn't).
   private sendRelayMessage(roomToken: string, kind: RelayMessageKind, payloadText: string): void {
-    this.transport.send(
-      ClientMessage.create({
-        relayMessage: {
-          roomToken,
-          kind: toWireKind(kind),
-          payload: encodeRelayPayload(payloadText),
-        },
-      }),
-    );
+    const msg = ClientMessage.create({
+      relayMessage: {
+        roomToken,
+        kind: toWireKind(kind),
+        payload: encodeRelayPayload(payloadText),
+      },
+    });
+    // Called from resyncVisitorSessions' loop and from EphemeralRelaySession's
+    // internal sendFrame callback, neither of which expects (or catches) a
+    // throw — swallow and surface via the normal "error" event instead of
+    // interrupting the caller, same as the queryChats/sendMessage gate's
+    // reasoning but without the promise a caller could catch itself.
+    try {
+      this.assertReadyToSend(msg);
+      this.transport.send(msg);
+    } catch (err) {
+      this.emit("error", err as Error);
+    }
   }
 
   // Re-announces "joined" for every visitor room this process is still
@@ -1691,12 +1715,42 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     clearTimeout(entry.timer);
   }
 
+  // Transport.send() queues bytes whenever the socket isn't OPEN and
+  // replays them as the first bytes of the NEXT connection, before
+  // authenticate() has sent so much as an auth challenge response on it
+  // (see transport.ts's onOpen: flushQueue() runs ahead of openListeners).
+  // A message composed while disconnected would otherwise survive the drop
+  // and reach the gateway unauthenticated on reconnect — mirrors the
+  // pre-auth replay bug fixed in the webapp client's sendProto gate.
+  // auth/registerDevice are exempt because they ARE the handshake that
+  // establishes `authenticated`; everything else must wait for it.
+  private assertReadyToSend(msg: ClientMessage): void {
+    if (msg.auth || msg.registerDevice) return;
+    if (!this.authenticated) {
+      throw new EvergramConnectionError(
+        "session_not_ready",
+        "Cannot send: not yet authenticated on this connection",
+      );
+    }
+  }
+
+  // Shared by every fire-and-forget envelope send (sendMessage, sendTyping,
+  // reactToMessage, removeReaction, editMessage, deleteMessage) — same gate
+  // as request(), just without a requestId/response to wait on.
+  private sendEnvelope(env: Envelope): void {
+    const msg = ClientMessage.create({ envelope: env });
+    this.assertReadyToSend(msg);
+    this.transport.send(msg);
+  }
+
   private request<K extends keyof ServerMessage>(
     msg: ClientMessage,
     expectedField: K,
     timeoutMs = this.requestTimeoutMs,
     matcher?: (value: NonNullable<ServerMessage[K]>) => boolean,
   ): Promise<NonNullable<ServerMessage[K]>> {
+    this.assertReadyToSend(msg);
+
     const requestId = this.nextRequestId++;
     if (this.nextRequestId > 0xffffffff) this.nextRequestId = 1;
 
