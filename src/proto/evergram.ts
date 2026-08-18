@@ -459,6 +459,7 @@ export interface ClientMessage {
   moderateChannel?: ModerateChannel | undefined;
   declineChatRequest?: DeclineChatRequest | undefined;
   listBlockedIdentities?: ListBlockedIdentities | undefined;
+  checkIdentityRegistered?: CheckIdentityRegistered | undefined;
 }
 
 export interface SubscribePublicChannel {
@@ -1028,6 +1029,7 @@ export interface ServerMessage {
   moderateChannelResponse?: ModerateChannelResponse | undefined;
   declineChatRequestResponse?: DeclineChatRequestResponse | undefined;
   listBlockedIdentitiesResponse?: ListBlockedIdentitiesResponse | undefined;
+  checkIdentityRegisteredResponse?: CheckIdentityRegisteredResponse | undefined;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -1667,6 +1669,21 @@ export interface GroupInviteReceivedEvent {
 export interface CheckBlockedResponse {
   status: ResponseStatus | undefined;
   blocked: boolean;
+}
+
+/**
+ * Public, unauthenticated lookup — returns only a boolean, never any other
+ * identity/account data, so it cannot be used to enumerate or fingerprint
+ * registered users beyond membership itself.
+ */
+export interface CheckIdentityRegistered {
+  address: string;
+  chainFamily: ChainFamily;
+}
+
+export interface CheckIdentityRegisteredResponse {
+  status: ResponseStatus | undefined;
+  registered: boolean;
 }
 
 export interface GetProfileResponse {
@@ -2647,6 +2664,7 @@ function createBaseClientMessage(): ClientMessage {
     moderateChannel: undefined,
     declineChatRequest: undefined,
     listBlockedIdentities: undefined,
+    checkIdentityRegistered: undefined,
   };
 }
 
@@ -2837,6 +2855,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.listBlockedIdentities !== undefined) {
       ListBlockedIdentities.encode(message.listBlockedIdentities, writer.uint32(498).fork()).join();
+    }
+    if (message.checkIdentityRegistered !== undefined) {
+      CheckIdentityRegistered.encode(message.checkIdentityRegistered, writer.uint32(506).fork()).join();
     }
     return writer;
   },
@@ -3344,6 +3365,14 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.listBlockedIdentities = ListBlockedIdentities.decode(reader, reader.uint32());
           continue;
         }
+        case 63: {
+          if (tag !== 506) {
+            break;
+          }
+
+          message.checkIdentityRegistered = CheckIdentityRegistered.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3653,6 +3682,11 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.list_blocked_identities)
         ? ListBlockedIdentities.fromJSON(object.list_blocked_identities)
         : undefined,
+      checkIdentityRegistered: isSet(object.checkIdentityRegistered)
+        ? CheckIdentityRegistered.fromJSON(object.checkIdentityRegistered)
+        : isSet(object.check_identity_registered)
+        ? CheckIdentityRegistered.fromJSON(object.check_identity_registered)
+        : undefined,
     };
   },
 
@@ -3844,6 +3878,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     if (message.listBlockedIdentities !== undefined) {
       obj.listBlockedIdentities = ListBlockedIdentities.toJSON(message.listBlockedIdentities);
     }
+    if (message.checkIdentityRegistered !== undefined) {
+      obj.checkIdentityRegistered = CheckIdentityRegistered.toJSON(message.checkIdentityRegistered);
+    }
     return obj;
   },
 
@@ -4034,6 +4071,10 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     message.listBlockedIdentities =
       (object.listBlockedIdentities !== undefined && object.listBlockedIdentities !== null)
         ? ListBlockedIdentities.fromPartial(object.listBlockedIdentities)
+        : undefined;
+    message.checkIdentityRegistered =
+      (object.checkIdentityRegistered !== undefined && object.checkIdentityRegistered !== null)
+        ? CheckIdentityRegistered.fromPartial(object.checkIdentityRegistered)
         : undefined;
     return message;
   },
@@ -9763,6 +9804,7 @@ function createBaseServerMessage(): ServerMessage {
     moderateChannelResponse: undefined,
     declineChatRequestResponse: undefined,
     listBlockedIdentitiesResponse: undefined,
+    checkIdentityRegisteredResponse: undefined,
   };
 }
 
@@ -9983,6 +10025,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.listBlockedIdentitiesResponse !== undefined) {
       ListBlockedIdentitiesResponse.encode(message.listBlockedIdentitiesResponse, writer.uint32(578).fork()).join();
+    }
+    if (message.checkIdentityRegisteredResponse !== undefined) {
+      CheckIdentityRegisteredResponse.encode(message.checkIdentityRegisteredResponse, writer.uint32(594).fork()).join();
     }
     return writer;
   },
@@ -10570,6 +10615,14 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.listBlockedIdentitiesResponse = ListBlockedIdentitiesResponse.decode(reader, reader.uint32());
           continue;
         }
+        case 74: {
+          if (tag !== 594) {
+            break;
+          }
+
+          message.checkIdentityRegisteredResponse = CheckIdentityRegisteredResponse.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -10929,6 +10982,11 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.list_blocked_identities_response)
         ? ListBlockedIdentitiesResponse.fromJSON(object.list_blocked_identities_response)
         : undefined,
+      checkIdentityRegisteredResponse: isSet(object.checkIdentityRegisteredResponse)
+        ? CheckIdentityRegisteredResponse.fromJSON(object.checkIdentityRegisteredResponse)
+        : isSet(object.check_identity_registered_response)
+        ? CheckIdentityRegisteredResponse.fromJSON(object.check_identity_registered_response)
+        : undefined,
     };
   },
 
@@ -11153,6 +11211,11 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.listBlockedIdentitiesResponse !== undefined) {
       obj.listBlockedIdentitiesResponse = ListBlockedIdentitiesResponse.toJSON(message.listBlockedIdentitiesResponse);
+    }
+    if (message.checkIdentityRegisteredResponse !== undefined) {
+      obj.checkIdentityRegisteredResponse = CheckIdentityRegisteredResponse.toJSON(
+        message.checkIdentityRegisteredResponse,
+      );
     }
     return obj;
   },
@@ -11405,6 +11468,10 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     message.listBlockedIdentitiesResponse =
       (object.listBlockedIdentitiesResponse !== undefined && object.listBlockedIdentitiesResponse !== null)
         ? ListBlockedIdentitiesResponse.fromPartial(object.listBlockedIdentitiesResponse)
+        : undefined;
+    message.checkIdentityRegisteredResponse =
+      (object.checkIdentityRegisteredResponse !== undefined && object.checkIdentityRegisteredResponse !== null)
+        ? CheckIdentityRegisteredResponse.fromPartial(object.checkIdentityRegisteredResponse)
         : undefined;
     return message;
   },
@@ -19229,6 +19296,166 @@ export const CheckBlockedResponse: MessageFns<CheckBlockedResponse> = {
       ? ResponseStatus.fromPartial(object.status)
       : undefined;
     message.blocked = object.blocked ?? false;
+    return message;
+  },
+};
+
+function createBaseCheckIdentityRegistered(): CheckIdentityRegistered {
+  return { address: "", chainFamily: 0 };
+}
+
+export const CheckIdentityRegistered: MessageFns<CheckIdentityRegistered> = {
+  encode(message: CheckIdentityRegistered, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.address !== "") {
+      writer.uint32(10).string(message.address);
+    }
+    if (message.chainFamily !== 0) {
+      writer.uint32(16).int32(message.chainFamily);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CheckIdentityRegistered {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCheckIdentityRegistered();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.address = reader.string();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.chainFamily = reader.int32() as any;
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CheckIdentityRegistered {
+    return {
+      address: isSet(object.address) ? globalThis.String(object.address) : "",
+      chainFamily: isSet(object.chainFamily)
+        ? chainFamilyFromJSON(object.chainFamily)
+        : isSet(object.chain_family)
+        ? chainFamilyFromJSON(object.chain_family)
+        : 0,
+    };
+  },
+
+  toJSON(message: CheckIdentityRegistered): unknown {
+    const obj: any = {};
+    if (message.address !== "") {
+      obj.address = message.address;
+    }
+    if (message.chainFamily !== 0) {
+      obj.chainFamily = chainFamilyToJSON(message.chainFamily);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CheckIdentityRegistered>, I>>(base?: I): CheckIdentityRegistered {
+    return CheckIdentityRegistered.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CheckIdentityRegistered>, I>>(object: I): CheckIdentityRegistered {
+    const message = createBaseCheckIdentityRegistered();
+    message.address = object.address ?? "";
+    message.chainFamily = object.chainFamily ?? 0;
+    return message;
+  },
+};
+
+function createBaseCheckIdentityRegisteredResponse(): CheckIdentityRegisteredResponse {
+  return { status: undefined, registered: false };
+}
+
+export const CheckIdentityRegisteredResponse: MessageFns<CheckIdentityRegisteredResponse> = {
+  encode(message: CheckIdentityRegisteredResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.status !== undefined) {
+      ResponseStatus.encode(message.status, writer.uint32(10).fork()).join();
+    }
+    if (message.registered !== false) {
+      writer.uint32(16).bool(message.registered);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): CheckIdentityRegisteredResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseCheckIdentityRegisteredResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 10) {
+            break;
+          }
+
+          message.status = ResponseStatus.decode(reader, reader.uint32());
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.registered = reader.bool();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): CheckIdentityRegisteredResponse {
+    return {
+      status: isSet(object.status) ? ResponseStatus.fromJSON(object.status) : undefined,
+      registered: isSet(object.registered) ? globalThis.Boolean(object.registered) : false,
+    };
+  },
+
+  toJSON(message: CheckIdentityRegisteredResponse): unknown {
+    const obj: any = {};
+    if (message.status !== undefined) {
+      obj.status = ResponseStatus.toJSON(message.status);
+    }
+    if (message.registered !== false) {
+      obj.registered = message.registered;
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<CheckIdentityRegisteredResponse>, I>>(base?: I): CheckIdentityRegisteredResponse {
+    return CheckIdentityRegisteredResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<CheckIdentityRegisteredResponse>, I>>(
+    object: I,
+  ): CheckIdentityRegisteredResponse {
+    const message = createBaseCheckIdentityRegisteredResponse();
+    message.status = (object.status !== undefined && object.status !== null)
+      ? ResponseStatus.fromPartial(object.status)
+      : undefined;
+    message.registered = object.registered ?? false;
     return message;
   },
 };

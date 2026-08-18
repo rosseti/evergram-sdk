@@ -154,6 +154,8 @@ message ClientMessage {
 
     DeclineChatRequest    decline_chat_request     = 61;
     ListBlockedIdentities list_blocked_identities   = 62;
+
+    CheckIdentityRegistered check_identity_registered = 63;
   }
 }
 
@@ -777,6 +779,8 @@ message ServerMessage {
 
     DeclineChatRequestResponse    decline_chat_request_response     = 71;
     ListBlockedIdentitiesResponse list_blocked_identities_response  = 72;
+
+    CheckIdentityRegisteredResponse check_identity_registered_response = 74;
   }
 }
 
@@ -1293,6 +1297,19 @@ message GroupInviteReceivedEvent {
 message CheckBlockedResponse {
   ResponseStatus status  = 1;
   bool           blocked = 2;
+}
+
+// Public, unauthenticated lookup — returns only a boolean, never any other
+// identity/account data, so it cannot be used to enumerate or fingerprint
+// registered users beyond membership itself.
+message CheckIdentityRegistered {
+  string       address      = 1;
+  ChainFamily  chain_family = 2;
+}
+
+message CheckIdentityRegisteredResponse {
+  ResponseStatus status     = 1;
+  bool           registered = 2;
 }
 
 message GetProfileResponse {
