@@ -32,14 +32,6 @@
     "example:trivia-bot": "tsx --env-file=.env examples/trivia-bot/index.ts",
     "prepare": "husky"
   },
-  "lint-staged": {
-    "*.{ts,tsx,js,jsx,json,md}": [
-      "prettier --write"
-    ],
-    "*.{ts,tsx}": [
-      "oxlint"
-    ]
-  },
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.1",
     "ripple-keypairs": "^3.0.0",
