@@ -7,6 +7,7 @@ enum ChainFamily {
   XRPL                     = 1;
   EVM                      = 2;
   BTC                      = 3;
+  SOL                      = 4;
 }
 
 message ChainIdentity {

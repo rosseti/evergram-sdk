@@ -14,6 +14,7 @@ export enum ChainFamily {
   XRPL = 1,
   EVM = 2,
   BTC = 3,
+  SOL = 4,
   UNRECOGNIZED = -1,
 }
 
@@ -31,6 +32,9 @@ export function chainFamilyFromJSON(object: any): ChainFamily {
     case 3:
     case "BTC":
       return ChainFamily.BTC;
+    case 4:
+    case "SOL":
+      return ChainFamily.SOL;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -48,6 +52,8 @@ export function chainFamilyToJSON(object: ChainFamily): string {
       return "EVM";
     case ChainFamily.BTC:
       return "BTC";
+    case ChainFamily.SOL:
+      return "SOL";
     case ChainFamily.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
