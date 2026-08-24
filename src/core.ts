@@ -207,6 +207,8 @@ export interface EvergramChatMessage {
   text: string | null;
   /** Typed view of `text` — switch on `.type` instead of parsing `text` yourself. */
   content: MessageContent;
+  /** msgId this message replied to, or null if it wasn't a reply. */
+  replyToMsgId: string | null;
 }
 
 export interface EvergramReaction {
@@ -2287,6 +2289,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
         ts: env.ts,
         text,
         content,
+        replyToMsgId: env.send.replyToMsgId || null,
       };
 
       this.emit("message", message);

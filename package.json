@@ -30,6 +30,7 @@
     "example:widget-visitor-bot": "tsx --env-file=.env examples/widget-visitor-bot/index.ts",
     "example:widget-channel-bot": "tsx --env-file=.env examples/widget-channel-bot/index.ts",
     "example:trivia-bot": "tsx --env-file=.env examples/trivia-bot/index.ts",
+    "example:xahau-tip-bot": "tsx --env-file=.env examples/xahau-tip-bot/index.ts",
     "prepare": "husky"
   },
   "dependencies": {
