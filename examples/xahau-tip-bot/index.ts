@@ -16,18 +16,18 @@ import { fundingWalletFrom, getAvailableBalanceXah, sendXahPayment } from "./xah
 const GATEWAY_URL = process.env.EVERGRAM_GATEWAY_URL || "ws://localhost:9000/api/ws";
 const XAHAU_WS_URL = process.env.XAHAU_WS_URL || "wss://xahau-test.net";
 const TIPBOT_OWNER = process.env.TIPBOT_OWNER;
-// Set to see every step of !tip resolution and payment submission — useful
+// Set to see every step of !tip resolution and payment submission. Useful
 // while diagnosing a wrong-target or fee report, noisy for normal running.
 // xahau-client.ts reads this same env var independently for its own debug
 // logging, rather than importing this constant, so each module stays
 // self-contained about its own config the way every other example here does.
 const DEBUG = process.env.TIPBOT_DEBUG === "true";
 // Absolute ceiling on what a single payment's Fee may reach, including all
-// of sendXahPayment's fee-escalation retries (see xahau-client.ts) — well
+// of sendXahPayment's fee-escalation retries (see xahau-client.ts): well
 // above ordinary network fees but nowhere near xrpl.js's own 2 XAH default,
 // which would let a misbehaving retry loop burn real money on fees alone.
 const TIPBOT_MAX_FEE_XAH = process.env.TIPBOT_MAX_FEE_XAH || "0.05";
-// Optional hard cap on a single !tip's amount — unset means no cap, same as
+// Optional hard cap on a single !tip's amount. Unset means no cap, same as
 // the original XRPTipBot's model (whatever you've deposited, you can send).
 // Recommended once this bot is pointed at mainnet with real value in it.
 const TIPBOT_MAX_TIP_XAH = process.env.TIPBOT_MAX_TIP_XAH
@@ -54,47 +54,47 @@ function resolveTargetAddress(target: TipTarget): string {
   if (target.kind === "address") return target.address;
   // reply/mention targets carry an Evergram identityKey, which for
   // ChainFamily.XRPL already embeds the ledger address (see
-  // src/identity.ts) — no lookup needed.
+  // src/identity.ts). No lookup needed.
   return parseIdentityKey(target.identityKey).address;
 }
 
 // This is a *personal* bot, not a custodial service: unlike the original
 // XRPTipBot (per-user deposit addresses + an off-chain balance ledger + a
-// withdraw step), there is exactly one wallet here — the bot's own — and
+// withdraw step), there is exactly one wallet here (the bot's own), and
 // every !tip is a real, immediate Xahau Payment straight out of it. That
 // wallet is the *same* seed that authenticates this bot's Evergram chat
 // identity (see xahau-client.ts's fundingWalletFrom): losing identity.json
 // here doesn't just orphan chat history like the other examples, it loses
 // custody of whatever XAH this bot's address holds. There is deliberately
-// no confirmation step before a !tip goes out — a typo'd amount or address
+// no confirmation step before a !tip goes out: a typo'd amount or address
 // sends real funds immediately. Defaults to Xahau **testnet**; only point
 // XAHAU_WS_URL at mainnet once you're sure you want that.
 //
-// NOT PRODUCTION-HARDENED — this demonstrates the SDK plumbing for a
+// NOT PRODUCTION-HARDENED. This demonstrates the SDK plumbing for a
 // real-payment bot, not a finished production service. A pass of manual
 // testnet testing plus an automated code-level security review (no
 // high-confidence findings) found and fixed real bugs, but neither
 // substitutes for the items below before this should hold value anyone
 // other than you would miss:
 //   - identity.json is a plaintext seed file, same as every other example
-//     here — for real value, put it behind a proper secret store (KMS,
+//     here. For real value, put it behind a proper secret store (KMS,
 //     Vault, an encrypted volume), not a JSON file on disk.
 //   - sendXahPayment()/getAvailableBalanceXah() (xahau-client.ts) have zero
-//     automated test coverage — only the pure-logic pieces (commands.ts,
+//     automated test coverage. Only the pure-logic pieces (commands.ts,
 //     serial-queue.ts, tip-ledger.ts, the retry helpers) are unit tested.
 //     Add integration tests against a real or mocked Client before trusting
 //     changes here not to regress silently.
 //   - tip-ledger.ts closes the common double-pay case (a redelivered
 //     message reprocessing an already-successful tip) but not the narrow
 //     window between sendXahPayment() succeeding and the record actually
-//     being written — closing that needs reconciling recorded tips against
+//     being written. Closing that needs reconciling recorded tips against
 //     the account's own tx history on the ledger, not just this local file.
 //   - No monitoring/alerting (low balance, rising payment-failure rate,
-//     process death) and no structured logging — console.log/warn/debug
+//     process death) and no structured logging: console.log/warn/debug
 //     only. Fine for a bot you watch yourself; not for one you'd trust to
 //     run unattended.
 //   - Never had a human security audit, just this session's automated
-//     review — get one before this handles value that matters to anyone
+//     review. Get one before this handles value that matters to anyone
 //     but you.
 async function main() {
   const { wallet, device } = loadOrCreateIdentity(join(__dirname, "identity.json"));
@@ -103,7 +103,7 @@ async function main() {
   // feeCushion above xrpl.js's own default (1.2x): a public testnet's
   // open-ledger fee can escalate past that default cushion under load from
   // other test traffic, which is exactly what produced the
-  // telINSUF_FEE_P/LastLedgerSequence failures seen in testing — see
+  // telINSUF_FEE_P/LastLedgerSequence failures seen in testing. See
   // xahau-client.ts's sendXahPayment retry for the other half of this fix.
   // maxFeeXRP replaces xrpl.js's own 2 XAH default with TIPBOT_MAX_FEE_XAH:
   // that default is a reasonable ceiling for XRPL's fee escalation, but
@@ -112,7 +112,7 @@ async function main() {
   // any sane tip amount.
   const xahau = new Client(XAHAU_WS_URL, { feeCushion: 2, maxFeeXRP: TIPBOT_MAX_FEE_XAH });
   // xrpl.js's Connection already retries an unexpected drop on its own
-  // (exponential backoff, internal to the `xrpl` package) — these are just
+  // (exponential backoff, internal to the `xrpl` package). These are just
   // visibility into that, same spirit as the bot.core listeners below. A
   // !tip issued while disconnected still fails cleanly: submitTip's catch
   // reports it to the owner rather than silently queuing it.
@@ -134,8 +134,8 @@ async function main() {
   bot.core.on("authenticated", () => console.log("[xahau-tip-bot] (re)authenticated"));
 
   // msgId -> sender, capped per chat, so "!tip 5" replying to someone's
-  // message can resolve a target without needing persisted chat history —
-  // same bounded-cache shape as EvergramCore's own seenEnvelopeKeys.
+  // message can resolve a target without needing persisted chat history.
+  // Same bounded-cache shape as EvergramCore's own seenEnvelopeKeys.
   const MAX_TRACKED_PER_CHAT = 200;
   const recentMessages = new Map<string, Map<string, string>>();
 
@@ -150,12 +150,12 @@ async function main() {
   }
 
   const HELP_TEXT = [
-    "!tip <amount> [XAH] — reply to someone's message to tip its author",
+    "!tip <amount> [XAH]: reply to someone's message to tip its author",
     "!tip @<identityKey> <amount> [XAH]",
     "!tip <address> <amount> [XAH]",
-    "!balance — this bot's available XAH balance",
-    "!address — this bot's funding address",
-    "!help — this message",
+    "!balance: this bot's available XAH balance",
+    "!address: this bot's funding address",
+    "!help: this message",
     ...(TIPBOT_MAX_TIP_XAH !== null ? [`(limit: ${TIPBOT_MAX_TIP_XAH} XAH per tip)`] : []),
   ].join("\n");
 
@@ -226,7 +226,7 @@ async function main() {
     if (already) {
       await bot.replyWithTyping(
         msg,
-        `Already processed this one — sent ${already.amount} ${already.currency} to ${already.toAddress}, tx ${already.txHash}.`,
+        `Already processed this one: sent ${already.amount} ${already.currency} to ${already.toAddress}, tx ${already.txHash}.`,
       );
       return;
     }
@@ -276,7 +276,7 @@ async function main() {
     // message tracked in this exact chatId, so it's a real participant. A
     // "mention"/"address" target could be anyone, possibly not even an
     // Evergram user, so there's no chat to announce into. Skipped in 1:1s
-    // too — that's just the owner and the bot, no one else to tell. Opening
+    // too: that's just the owner and the bot, no one else to tell. Opening
     // a fresh DM to notify a stranger was considered and dropped: it's an
     // unsolicited chat request, and silently no-ops for anyone with
     // requireChatApproval on (see README "Access tiers").

@@ -18,7 +18,7 @@ export interface ParsedTip {
 export type ParseTipResult = { ok: true; tip: ParsedTip } | { ok: false; error: string };
 
 const AMOUNT_RE = /^\d+(\.\d+)?$/;
-// XAH's smallest on-ledger unit is 1 drop = 0.000001 XAH, same as XRP — an
+// XAH's smallest on-ledger unit is 1 drop = 0.000001 XAH, same as XRP. An
 // amount with more precision than that is rejected by xrpl's xrpToDrops()
 // at submit time regardless, but with a much less actionable error. Catching
 // it here at parse time gives the caller a message that actually says why.
@@ -33,7 +33,7 @@ function validateAmount(raw: string): { ok: true; amount: string } | { ok: false
   if (decimals > MAX_DECIMALS) {
     return {
       ok: false,
-      error: `Invalid amount: ${raw} — XAH allows at most ${MAX_DECIMALS} decimal places (smallest unit is 0.000001).`,
+      error: `Invalid amount: ${raw}. XAH allows at most ${MAX_DECIMALS} decimal places (smallest unit is 0.000001).`,
     };
   }
 
@@ -41,9 +41,9 @@ function validateAmount(raw: string): { ok: true; amount: string } | { ok: false
 }
 
 // Parses everything after "!tip ". Three shapes, tried in order:
-//   "!tip @<identityKey> <amount> [XAH]"  — explicit mention
-//   "!tip <rAddress> <amount> [XAH]"      — raw ledger address
-//   "!tip <amount> [XAH]"                 — no target token; falls back to
+//   "!tip @<identityKey> <amount> [XAH]"  : explicit mention
+//   "!tip <rAddress> <amount> [XAH]"      : raw ledger address
+//   "!tip <amount> [XAH]"                 : no target token, falls back to
 //                                            replySender (the author of the
 //                                            message this command replied
 //                                            to), like the original
@@ -72,7 +72,7 @@ export function parseTipCommand(text: string, replySender: string | null): Parse
     return { ok: true, tip: { amount: validated.amount, currency, target } };
   }
 
-  // No recognizable target token — treat rest[0] as the amount and fall
+  // No recognizable target token: treat rest[0] as the amount and fall
   // back to replySender.
   const [amountRaw, currency = "XAH"] = rest;
   const validated = validateAmount(amountRaw);
@@ -81,7 +81,7 @@ export function parseTipCommand(text: string, replySender: string | null): Parse
     return {
       ok: false,
       error:
-        "No target given — reply to the person's message, or use !tip @<identityKey>/<address> <amount>.",
+        "No target given. Reply to the person's message, or use !tip @<identityKey>/<address> <amount>.",
     };
   }
 
