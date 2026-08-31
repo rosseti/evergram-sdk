@@ -160,7 +160,7 @@ export interface EvergramCoreOptions {
    * auto-detected via Node's `os.platform()` — see osFamily() below.
    */
   platform?: string;
-  /** Mirrors the contract's EVERGRAM_MAX_PARTICIPANTS (default 100). */
+  /** Mirrors the contract's EVERGRAM_MAX_PARTICIPANTS (default 250). */
   maxParticipants?: number;
   /**
    * Mirrors the gateway's NEXT_PUBLIC_MAX_MESSAGE_SIZE. Unset by default —
@@ -470,7 +470,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     this.assertDeviceKeypairValid(opts.device);
     this.identity.address = opts.wallet.address;
     this.selfIdentityKey = identityKey(this.identity as any);
-    this.maxParticipants = opts.maxParticipants ?? 100;
+    this.maxParticipants = opts.maxParticipants ?? 250;
     this.maxMessageSize = opts.maxMessageSize;
     // Must clear the gateway's own per-attempt consensus-wait timeout with
     // margin — otherwise the client gives up before the gateway itself
