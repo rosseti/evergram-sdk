@@ -341,6 +341,15 @@ export interface EvergramCoreEvents {
     event: { chatId: string; msgId: string; status: ResponseStatus | undefined; eventType: string },
   ];
   chatKeyRotated: [event: { chatId: string }];
+  // This device has no sealed symmetric key for the chat at all, so nothing
+  // arriving in it can be decrypted. Distinct from an "error": it is an
+  // expected state (a freshly registered device is keys-missing everywhere
+  // until some participant rotates), and emitting on the "error" channel
+  // would throw on a listener-less process, at boot, once per chat. A bot
+  // that only listens and never sends will otherwise sit silently deaf in
+  // that chat forever, since the SDK's only automatic rotation trigger is a
+  // failed send. Call rotateChatVersion(chatId) to resolve it.
+  chatKeyMissing: [event: { chatId: string }];
   chatRemoved: [chatId: string];
   joinRequested: [event: JoinRequestedEvent];
   joinDenied: [event: JoinDeniedEvent];
@@ -417,6 +426,10 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     string,
     { chatId: string; text: string; opts?: { replyToMsgId?: string }; retried: boolean }
   >();
+  // Chats this device currently has no sealed key for, so chatKeyMissing is
+  // emitted on the transition into that state rather than on every sync.
+  // Bounded by the account's chat count, like `chats` itself.
+  private readonly chatsMissingKey = new Set<string>();
   private readonly pendingChatRequests = new Map<string, PendingChatRequest>();
   private readonly pendingGroupInvites = new Map<string, PendingGroupInvite>();
   // Dedicated signal for connect()/reconnectAndAuthenticate() to observe an
@@ -2098,7 +2111,19 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     this.chats.set(chat.chatId, chat);
 
     const sealed = chat.symKeyEncrypted?.[this.selfIdentityKey]?.devices?.[this.device.deviceId];
-    if (!sealed) return;
+
+    if (!sealed) {
+      // Once per chat, not once per pass: processChatInfo runs again for
+      // every chat on every syncChats and every reconnect, and a bot that
+      // reconnects hourly should not get the same notice hourly.
+      if (!this.chatsMissingKey.has(chat.chatId)) {
+        this.chatsMissingKey.add(chat.chatId);
+        this.emit("chatKeyMissing", { chatId: chat.chatId });
+      }
+      return;
+    }
+
+    this.chatsMissingKey.delete(chat.chatId);
 
     const opened = openSealedSymKey(
       {
@@ -2197,7 +2222,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
           "error",
           new EvergramValidationError(
             "pending_envelope_queue_overflow",
-            `chat ${env.chatId}'s key never resolved after ${MAX_PENDING_ENVELOPES_PER_CHAT} queued envelopes — dropping the oldest. Check chatKeyRotated/error events for this chat.`,
+            `chat ${env.chatId}'s key never resolved after ${MAX_PENDING_ENVELOPES_PER_CHAT} queued envelopes — dropping the oldest. Check chatKeyMissing/chatKeyRotated/error events for this chat.`,
           ),
         );
       }

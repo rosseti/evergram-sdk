@@ -387,7 +387,16 @@ what's available:
 
 - **Connection**: `connected`, `authenticated`, `disconnected`, `reconnecting`, `error`
 - **Messaging**: `message`, `reaction`, `messageEdited`, `messageDeleted`, `typing`, `delivery`
-- **Chats**: `chatKeyRotated`, `chatRemoved`, `joinRequested`, `joinDenied`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
+- **Chats**: `chatKeyRotated`, `chatKeyMissing`, `chatRemoved`, `joinRequested`, `joinDenied`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
+
+`chatKeyMissing` fires when this device has no sealed symmetric key for a chat, so nothing arriving in it can be decrypted. A freshly registered device is in that state for every existing chat until some participant rotates the chat key. The SDK does not rotate on its own except when a send fails, so a bot that only listens stays deaf in that chat until you call `rotateChatVersion(chatId)`:
+
+```ts
+bot.core.on("chatKeyMissing", ({ chatId }) => bot.core.rotateChatVersion(chatId));
+```
+
+Rotation is expensive for a large group (a device-key fan-out over every participant plus a consensus write), so pace this yourself if you expect many chats at once rather than firing them all in parallel.
+
 - **Widget-visitor chat**: `visitorRoomRequested`, `visitorMessage`, `visitorReaction`, `visitorMessageEdited`, `visitorMessageDeleted`, `visitorTyping`, `visitorStatusChanged`, `visitorRoomTimedOut`, `visitorChannelParticipantJoined`, `visitorChannelParticipantLeft`, `visitorChannelModeChanged`, `visitorKicked`
 
 ### `EvergramBot`
