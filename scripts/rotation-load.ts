@@ -60,6 +60,22 @@ const CONNECT_ATTEMPTS = Number(process.env.CONNECT_ATTEMPTS || 3);
 const PROBE_BASELINE = Number(process.env.PROBE_BASELINE || 3);
 const PROBE_INTERVAL_MS = Number(process.env.PROBE_INTERVAL_MS || 500);
 const PROBE_MAX_SAMPLES = Number(process.env.PROBE_MAX_SAMPLES || 60);
+
+// DRAIN=1 replaces the burst sweep with a sustained drain: the shape the
+// paced-queue proposal actually produces. A burst measures one instant; the
+// question a paced queue raises is whether HALF AN HOUR of steady rotation
+// degrades anything, and whether several devices draining at once (every
+// member of a large group goes keys-missing after one rotation) compounds.
+const DRAIN = process.env.DRAIN === "1";
+const DRAIN_ROTATIONS = Number(process.env.DRAIN_ROTATIONS || 40);
+const DRAIN_CONCURRENCY = Number(process.env.DRAIN_CONCURRENCY || 2);
+// Independent drainers, each running its own concurrency-limited queue over
+// the same pool of chats. >1 reproduces the compounding case, including the
+// rotation_conflict races between devices that is part of its real cost.
+const DRAIN_DEVICES = Number(process.env.DRAIN_DEVICES || 1);
+// Probe samples are grouped into buckets so drift over the drain is visible
+// as a series rather than averaged away into one number.
+const PROBE_BUCKET_MS = Number(process.env.PROBE_BUCKET_MS || 30_000);
 const STATE_PATH = process.env.STATE_PATH || join(__dirname, ".rotation-load-identities.json");
 // Optional: real wallet addresses (comma-separated, bare addresses — the
 // script qualifies them) to invite into every group, so the rig's chats are
@@ -203,6 +219,112 @@ async function probeRead(core: EvergramCore, targetIdKey: string): Promise<numbe
 function percentile(sorted: number[], p: number): number {
   if (!sorted.length) return -1;
   return sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))];
+}
+
+// The sustained-load counterpart to the burst sweep. Rotations are paced
+// exactly the way the proposed eager queue would pace them (a fixed number
+// in flight per device, refilled as each finishes) and the read probe runs
+// for the whole duration, so the output is a time series: if a long drain
+// degrades unrelated reads, the later buckets show it.
+async function runDrain(
+  chatIds: string[],
+  probeTarget: string,
+  probeCore: EvergramCore,
+  drainers: EvergramCore[],
+): Promise<void> {
+  const devices = drainers.slice(0, DRAIN_DEVICES);
+  const perDevice = Math.ceil(DRAIN_ROTATIONS / devices.length);
+
+  console.log(
+    `[rig] phase 5: draining ${DRAIN_ROTATIONS} rotations across ${devices.length} device(s), ` +
+      `${DRAIN_CONCURRENCY} in flight each`,
+  );
+
+  // Quiet-node baseline first: the buckets below are only meaningful
+  // against a number taken while nothing is rotating.
+  const baseline: number[] = [];
+  for (let i = 0; i < PROBE_BASELINE; i++) {
+    baseline.push(await probeRead(probeCore, probeTarget));
+  }
+  const baselineSorted = [...baseline].sort((a, b) => a - b);
+  console.log(`[rig] probe baseline p50 ${percentile(baselineSorted, 50)}ms`);
+
+  const startedAt = Date.now();
+  let drainDone = false;
+  const rotations: { ms: number; ok: boolean; err?: string }[] = [];
+
+  const runDevice = async (core: EvergramCore, deviceIndex: number) => {
+    let issued = 0;
+
+    const worker = async () => {
+      while (issued < perDevice) {
+        // Captured before the await so two workers on the same device never
+        // take the same slot.
+        const seq = issued++;
+        // Offset per device so devices do not march in lockstep over the
+        // same chat, which would turn the whole drain into a conflict storm
+        // rather than the mix of contention and conflict a real boot has.
+        const chatId = chatIds[(seq + deviceIndex) % chatIds.length];
+        const callStarted = Date.now();
+
+        try {
+          await core.rotateChatVersion(chatId);
+          rotations.push({ ms: Date.now() - callStarted, ok: true });
+        } catch (err) {
+          rotations.push({ ms: Date.now() - callStarted, ok: false, err: (err as Error).message });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: DRAIN_CONCURRENCY }, worker));
+  };
+
+  const drain = Promise.all(devices.map(runDevice)).then(() => {
+    drainDone = true;
+  });
+
+  const samples: { at: number; ms: number }[] = [];
+
+  const probe = (async () => {
+    while (!drainDone) {
+      const at = Date.now() - startedAt;
+      samples.push({ at, ms: await probeRead(probeCore, probeTarget) });
+      await new Promise((r) => setTimeout(r, PROBE_INTERVAL_MS));
+    }
+  })();
+
+  await Promise.all([drain, probe]);
+
+  const elapsed = Date.now() - startedAt;
+  const failures = rotations.filter((r) => !r.ok);
+  const rotationMs = rotations.map((r) => r.ms).sort((a, b) => a - b);
+
+  console.log(
+    `[rig] drain finished in ${(elapsed / 1000).toFixed(0)}s: ${rotations.length} rotations, ` +
+      `${failures.length} failed (${failures[0]?.err ?? "none"})`,
+  );
+  console.log(
+    `[rig] rotation p50 ${percentile(rotationMs, 50)}ms p95 ${percentile(rotationMs, 95)}ms`,
+  );
+
+  // Bucketed rather than pooled: a drift that only appears after ten minutes
+  // is invisible in a single percentile over the whole run.
+  const buckets = new Map<number, number[]>();
+  for (const sample of samples) {
+    const bucket = Math.floor(sample.at / PROBE_BUCKET_MS);
+    const list = buckets.get(bucket);
+    if (list) list.push(sample.ms);
+    else buckets.set(bucket, [sample.ms]);
+  }
+
+  console.log(`[rig] probe by ${PROBE_BUCKET_MS / 1000}s bucket:`);
+  for (const [bucket, list] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
+    const sorted = [...list].sort((a, b) => a - b);
+    console.log(
+      `[rig]   t+${bucket * (PROBE_BUCKET_MS / 1000)}s  n=${sorted.length}  ` +
+        `p50=${percentile(sorted, 50)}ms  p95=${percentile(sorted, 95)}ms  max=${sorted[sorted.length - 1]}ms`,
+    );
+  }
 }
 
 async function main() {
@@ -406,6 +528,14 @@ async function main() {
         }
       }
     }
+  }
+
+  if (DRAIN) {
+    await runDrain(chatIds, probeTarget, creator, [victim, ...live.slice(3).map((l) => l.core)]);
+
+    victim.close();
+    for (const l of live) l.core.close();
+    return;
   }
 
   console.log(`[rig] phase 4: sweeping concurrency ${SWEEP.join(",")}`);
