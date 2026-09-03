@@ -52,7 +52,13 @@ export type {
   VisitorSessionHandle,
 } from "./bot.js";
 
-export { generateWallet, walletFromSeed, buildAuthChallenge, signAuthChallenge } from "./wallet.js";
+export {
+  generateWallet,
+  walletFromSeed,
+  walletFromRegularKey,
+  buildAuthChallenge,
+  signAuthChallenge,
+} from "./wallet.js";
 export type { EvergramWallet } from "./wallet.js";
 
 export { generateDeviceKeypair, deriveDeviceId, hexToBytes, bytesToHex } from "./crypto.js";

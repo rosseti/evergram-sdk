@@ -23,6 +23,26 @@ export function walletFromSeed(seed: string): EvergramWallet {
   };
 }
 
+// For accounts signing with a regular key instead of their master secret:
+// `accountAddress` is the account being authenticated as, `regularKeySeed`
+// is the seed of the key set as that account's RegularKey on-ledger. The
+// gateway verifies the resulting signature against publicKeyHex and then
+// checks that key is authorized for `address` (master or regular) — same
+// flow as master-key wallets, just with the two no longer tied to the same
+// keypair.
+export function walletFromRegularKey(
+  accountAddress: string,
+  regularKeySeed: string,
+): EvergramWallet {
+  const kp = deriveKeypair(regularKeySeed);
+  return {
+    seed: regularKeySeed,
+    address: accountAddress,
+    publicKeyHex: kp.publicKey,
+    privateKeyHex: kp.privateKey,
+  };
+}
+
 // Must match the gateway's own buildAuthChallenge() exactly — same string —
 // or every signature this produces will be rejected as
 // invalid_signed_message_signature.

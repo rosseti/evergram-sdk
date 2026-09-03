@@ -4,6 +4,7 @@ import {
   buildAuthChallenge,
   generateWallet,
   signAuthChallenge,
+  walletFromRegularKey,
   walletFromSeed,
 } from "../../src/wallet.js";
 
@@ -58,6 +59,26 @@ describe("wallet", () => {
     expect(verifyKeypairSignature(otherChallengeHex, proof.signatureHex, proof.publicKeyHex)).toBe(
       false,
     );
+  });
+
+  it("walletFromRegularKey signs as the account while keying off a different keypair", () => {
+    const account = generateWallet(); // the master account being authenticated as
+    const regularKey = generateWallet(); // a different keypair, set as the account's RegularKey
+
+    const wallet = walletFromRegularKey(account.address, regularKey.seed);
+    expect(wallet.address).toBe(account.address);
+    expect(wallet.publicKeyHex).toBe(regularKey.publicKeyHex);
+    expect(wallet.publicKeyHex).not.toBe(account.publicKeyHex);
+
+    const proof = signAuthChallenge(wallet, "device123", "nonce-xyz");
+    expect(proof.publicKeyHex).toBe(regularKey.publicKeyHex);
+
+    const challengeHex = Buffer.from(
+      buildAuthChallenge(account.address, "device123", "nonce-xyz"),
+      "utf8",
+    ).toString("hex");
+
+    expect(verifyKeypairSignature(challengeHex, proof.signatureHex, proof.publicKeyHex)).toBe(true);
   });
 
   it("a signature bound to one device fails verification against a different deviceId", () => {

@@ -31,6 +31,7 @@
     "example:widget-channel-bot": "tsx --env-file=.env examples/widget-channel-bot/index.ts",
     "example:trivia-bot": "tsx --env-file=.env examples/trivia-bot/index.ts",
     "example:xahau-tip-bot": "tsx --env-file=.env examples/xahau-tip-bot/index.ts",
+    "example:regular-key-auth-check": "tsx --env-file=.env examples/regular-key-auth-check/index.ts",
     "prepare": "npm run build && (husky || true)",
     "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "rotation-load": "tsx scripts/rotation-load.ts"

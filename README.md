@@ -55,6 +55,10 @@ canonical schema changes) and `src/crypto.ts`.
 import { EvergramBot, generateWallet, generateDeviceKeypair, deriveDeviceId } from "evergram-sdk";
 
 const wallet = generateWallet(); // XRPL keypair; persist wallet.seed somewhere safe
+// Signing with a regular key instead of the account's master secret? Use
+// walletFromRegularKey(accountAddress, regularKeySeed) instead — it keeps
+// `wallet.address` as the account being authenticated as while signing with
+// the regular key's keypair.
 const { pubHex, privHex } = generateDeviceKeypair();
 const device = { deviceId: deriveDeviceId(pubHex), devicePubHex: pubHex, devicePrivHex: privHex };
 
