@@ -67,7 +67,16 @@ export function decryptMessage(
   const nonce = base64ToBytes(nonceB64);
   const box = base64ToBytes(ciphertextB64);
 
-  const opened = nacl.secretbox.open(box, nonce, symKey);
+  // tweetnacl throws (rather than returning null) on a malformed nonce/key
+  // length — the gateway is untrusted transport, so a truncated/corrupted
+  // envelope must fail closed as a normal decrypt failure, not escape as an
+  // uncaught exception out of the decrypt path.
+  let opened: Uint8Array | null;
+  try {
+    opened = nacl.secretbox.open(box, nonce, symKey);
+  } catch {
+    return null;
+  }
   return opened ? new TextDecoder().decode(opened) : null;
 }
 
@@ -80,12 +89,32 @@ export function openSealedSymKey(
   sealed: { ciphertext: string; nonce: string; ephemeralPubkey: string },
   devicePrivHex: string,
 ): Uint8Array | null {
-  return nacl.box.open(
-    base64ToBytes(sealed.ciphertext),
-    base64ToBytes(sealed.nonce),
-    base64ToBytes(sealed.ephemeralPubkey),
-    hexToBytes(devicePrivHex),
-  );
+  // Same rationale as decryptMessage above: a malformed sealed envelope
+  // (bad nonce/key/pubkey length) must fail closed, not throw.
+  try {
+    return nacl.box.open(
+      base64ToBytes(sealed.ciphertext),
+      base64ToBytes(sealed.nonce),
+      base64ToBytes(sealed.ephemeralPubkey),
+      hexToBytes(devicePrivHex),
+    );
+  } catch {
+    return null;
+  }
+}
+
+// Constant-shape comparison for two symmetric keys — used by
+// processChatInfo to tell an actual rotation (different key bytes) apart
+// from a redundant re-derivation of the same key (a second ChatInfo push
+// for a chat whose key hasn't changed). Not used for anything
+// security-sensitive (both inputs are already-decrypted local key
+// material), so a simple byte comparison is sufficient.
+export function symKeysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 export function generateDeviceKeypair(): { pubHex: string; privHex: string } {

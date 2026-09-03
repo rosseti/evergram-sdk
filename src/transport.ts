@@ -13,6 +13,16 @@ export type TransportListener = (msg: ServerMessage) => void;
 // core.ts's bounded caches.
 const MAX_OUTGOING_QUEUE = 1000;
 
+// Heartbeat: a long-idle bot connection behind a proxy/load balancer can
+// have its TCP session silently dropped with neither side ever seeing a
+// close frame — nothing here otherwise notices until the next send fails
+// or the gateway's own idle timeout (if any) eventually closes it. A
+// WebSocket ping with no pong inside HEARTBEAT_TIMEOUT_MS is treated as a
+// dead connection and torn down via terminate(), which onClose picks up
+// like any other drop and reconnects from.
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 10_000;
+
 // Node WS transport with reconnect/backoff mirroring the webapp client's own
 // HotPocket reconnect logic (exponential backoff with jitter, capped at
 // 30s). Auth lives one layer up
@@ -29,6 +39,11 @@ export class Transport {
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private readonly outgoingQueue: Uint8Array[] = [];
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private heartbeatTimeout: NodeJS.Timeout | null = null;
+  // Lets a NEW connect() call reject a still-pending PREVIOUS one instead of
+  // silently abandoning it — see connect()'s own comment below.
+  private inFlightConnectReject: ((err: Error) => void) | null = null;
 
   constructor(private readonly url: string) {}
 
@@ -57,9 +72,32 @@ export class Transport {
   }
 
   connect(): Promise<void> {
+    // A caller invoking connect() again while a previous call is still
+    // waiting on its own socket to open would otherwise silently abandon
+    // that first call: every handler below guards on `ws === this.ws` and
+    // no-ops once superseded (see that guard's own comment), so the first
+    // call's promise settled neither resolve nor reject and just hung
+    // forever once `this.ws` was reassigned. Reject it now, and stop the
+    // socket it was waiting on, before starting the new one.
+    if (this.inFlightConnectReject) {
+      const reject = this.inFlightConnectReject;
+      this.inFlightConnectReject = null;
+      reject(
+        new EvergramConnectionError(
+          "connect_superseded",
+          "A newer connect() call superseded this one",
+        ),
+      );
+    }
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      this.stopHeartbeat();
+      this.ws.terminate();
+    }
+
     this.manuallyClosed = false;
 
     return new Promise((resolve, reject) => {
+      this.inFlightConnectReject = reject;
       const ws = new WebSocket(this.url);
       this.ws = ws;
 
@@ -80,8 +118,15 @@ export class Transport {
       const onOpen = () => {
         if (ws !== this.ws) return;
         this.reconnectAttempts = 0;
-        this.flushQueue();
+        this.startHeartbeat(ws);
+        // Deliberately NOT flushing outgoingQueue here — the socket is open
+        // but not yet authenticated on this connection (EvergramCore's
+        // authenticate() runs from an openListener below). Flushing now
+        // would send anything queued while disconnected straight onto an
+        // unauthenticated session. EvergramCore calls flushQueue() itself
+        // once auth succeeds — see its onOpen handler.
         for (const cb of this.openListeners) cb();
+        this.inFlightConnectReject = null;
         resolve();
       };
 
@@ -98,6 +143,7 @@ export class Transport {
 
       const onClose = () => {
         if (ws !== this.ws) return;
+        this.stopHeartbeat();
         for (const cb of this.closeListeners) cb();
         if (!this.manuallyClosed) this.scheduleReconnect();
       };
@@ -105,6 +151,7 @@ export class Transport {
       const onError = (err: Error) => {
         if (ws !== this.ws) return;
         if (ws.readyState !== WebSocket.OPEN) {
+          this.inFlightConnectReject = null;
           reject(new EvergramConnectionError("connection_failed", err.message));
         }
       };
@@ -119,7 +166,36 @@ export class Transport {
   close(): void {
     this.manuallyClosed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.stopHeartbeat();
     this.ws?.close();
+  }
+
+  // Sends a WebSocket ping every HEARTBEAT_INTERVAL_MS while `ws` stays the
+  // current socket; a pong reply (see onPong below) cancels the matching
+  // HEARTBEAT_TIMEOUT_MS deadline. No pong in time means the connection is
+  // presumed dead — see HEARTBEAT_TIMEOUT_MS's comment above.
+  private startHeartbeat(ws: WebSocket): void {
+    this.stopHeartbeat();
+
+    this.heartbeatInterval = setInterval(() => {
+      if (ws !== this.ws || ws.readyState !== WebSocket.OPEN) return;
+      this.heartbeatTimeout = setTimeout(() => ws.terminate(), HEARTBEAT_TIMEOUT_MS);
+      ws.ping();
+    }, HEARTBEAT_INTERVAL_MS);
+
+    const onPong = () => {
+      if (ws !== this.ws || !this.heartbeatTimeout) return;
+      clearTimeout(this.heartbeatTimeout);
+      this.heartbeatTimeout = null;
+    };
+    ws.on("pong", onPong);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
+    if (this.heartbeatTimeout) clearTimeout(this.heartbeatTimeout);
+    this.heartbeatInterval = null;
+    this.heartbeatTimeout = null;
   }
 
   send(msg: ClientMessage): void {
@@ -134,7 +210,10 @@ export class Transport {
     this.ws!.send(bytes);
   }
 
-  private flushQueue(): void {
+  // Called by EvergramCore once a connection has successfully
+  // (re-)authenticated — see connect()'s onOpen comment above for why this
+  // can't just run automatically on socket open.
+  flushQueue(): void {
     // splice(0) drains and clears in one O(n) pass — repeatedly shift()ing
     // in a loop is O(n) per call, making a full drain O(n^2).
     const queued = this.outgoingQueue.splice(0);

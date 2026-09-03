@@ -34,6 +34,7 @@ vi.mock("../../src/transport", () => {
     }
     close() {}
     send() {}
+    flushQueue() {}
   }
   return { Transport: FakeTransport };
 });
@@ -64,9 +65,12 @@ describe("connect() error-listener safety", () => {
     const authErr = new Error("auth failed");
     vi.spyOn(core as any, "authenticate").mockRejectedValue(authErr);
 
-    // Sanity: no consumer registered an "error" listener, mirroring
-    // EvergramBot.start(), which calls core.connect() without one.
-    expect(core.listenerCount("error")).toBe(0);
+    // Sanity: no *external* consumer registered an "error" listener,
+    // mirroring EvergramBot.start(), which calls core.connect() without
+    // one — the 1 here is EvergramCore's own permanent no-op default (see
+    // its constructor), which now makes emit("error", ...) crash-safe on
+    // its own even without this test's connect()-scoped listener dance.
+    expect(core.listenerCount("error")).toBe(1);
 
     const connectPromise = core.connect();
 

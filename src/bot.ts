@@ -40,7 +40,7 @@ export interface JoinRequestHandle extends JoinRequestedEvent {
 export interface ChatRequestHandle extends PendingChatRequest {
   /** Accepts the request and materializes the 1:1 chat (acceptChatRequest). */
   approve(): Promise<unknown>;
-  /** Rejects the request — clears it without ever creating a chat (blockIdentity). */
+  /** Declines this one request only — does not block the sender (declineChatRequest). Use core.blockIdentity() separately to also block them. */
   deny(): Promise<unknown>;
 }
 
@@ -326,7 +326,7 @@ export class EvergramBot {
     const asHandle = (event: PendingChatRequest): ChatRequestHandle => ({
       ...event,
       approve: () => this.core.acceptChatRequest(event.fromIdentity),
-      deny: () => this.core.blockIdentity(event.fromIdentity),
+      deny: () => this.core.declineChatRequest(event.fromIdentity),
     });
 
     const unsubscribe = this.bindEvent<PendingChatRequest>("chatRequestReceived", (event) =>

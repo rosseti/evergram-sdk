@@ -24,11 +24,13 @@ import { EvergramWallet, signAuthChallenge } from "./wallet.js";
 import { identityKey, parseIdentityKey } from "./identity.js";
 import {
   decryptMessage,
+  deriveDeviceId,
   deriveDevicePubHex,
   encryptMessage,
   generateMsgId,
   hexToBytes,
   openSealedSymKey,
+  symKeysEqual,
 } from "./crypto.js";
 import {
   EvergramAuthError,
@@ -110,6 +112,15 @@ const MAX_PENDING_CHATS = 200;
 // MAX_PENDING_CHATS above.
 const MAX_PENDING_CHAT_REQUESTS = 500;
 const MAX_PENDING_GROUP_INVITES = 500;
+
+// Bounds visitorSessions (see createVisitorSession below) — the live
+// widget-visitor relay sessions this process is currently a party to.
+// Unlike the caches above, entries here are also removed as soon as a
+// session naturally ends (endVisitorRoom, or onStatusChange's "closed");
+// this cap only guards the case of many concurrently open widget rooms
+// (plus reconnect resync) outrunning that natural cleanup. Same
+// FIFO-eviction rationale as MAX_PENDING_CHATS above.
+const MAX_VISITOR_SESSIONS = 1000;
 
 // Caps how many next_cursor pages syncChats() will follow automatically
 // per boot/explicit sync (see syncChatsPageCount below).
@@ -493,11 +504,29 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
 
     this.transport = opts.transport ?? new Transport(opts.url);
 
+    // Node's EventEmitter throws synchronously on emit("error", ...) with
+    // zero listeners registered. Several background paths (rotation-retry
+    // exhaustion, chat/visitor-room key unseal failure, queue overflows,
+    // a thrown bindEvent handler, ...) call this.emit("error", ...) outside
+    // of any request a caller is actively awaiting, so there is no
+    // guarantee a bot author has an "error" listener attached by the time
+    // one of those fires — the documented quick start doesn't add one.
+    // A permanent no-op listener means emit("error", ...) can never crash
+    // the process; callers who do want to observe errors just add their
+    // own listener alongside this one; EventEmitter has no trouble with
+    // more than one.
+    this.on("error", () => {});
+
     this.transport.onOpen(() => {
       this.emit("connected");
       this.authenticate()
         .then(() => {
           this.authenticated = true;
+          // Only now — after this connection has actually authenticated —
+          // is it safe to flush anything queued while disconnected (see
+          // Transport.connect()'s onOpen comment); flushing on bare socket
+          // open would send it onto an unauthenticated session.
+          this.transport.flushQueue();
           // Mirrors the webapp client, which does the same right after auth
           // (its own auth-ready/syncChats call before going fully online).
           // Without this, a fresh process —
@@ -533,7 +562,20 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
 
     this.transport.onReconnecting((attempt) => this.emit("reconnecting", attempt));
 
-    this.transport.onMessage((msg) => this.handleServerMessage(msg));
+    this.transport.onMessage((msg) => {
+      // handleServerMessage ultimately reaches decrypt/unseal calls whose
+      // inputs (nonce/key/ciphertext lengths) come straight off the wire
+      // from an untrusted gateway. crypto.ts now fails closed (returns
+      // null) for tweetnacl's own throw-on-bad-length behavior, but this
+      // catch is the last line of defense against any other unexpected
+      // throw in the push-handling path — one bad frame must not tear down
+      // the whole socket loop for a long-running bot.
+      try {
+        this.handleServerMessage(msg);
+      } catch (err) {
+        this.emit("error", err instanceof Error ? err : new Error(String(err)));
+      }
+    });
   }
 
   // Resolves once the WebSocket is open AND the signed_message auth flow
@@ -648,6 +690,27 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.requestWithReauth(msg, "registerDeviceResponse", 35000);
   }
 
+  async listDevices() {
+    const msg = ClientMessage.create({ listDevices: {} });
+    return this.requestWithReauth(msg, "listDevicesResponse");
+  }
+
+  // Revoking this connection's OWN device invalidates the session it's
+  // currently authenticated under — the gateway/contract don't distinguish
+  // "revoke a different device" from "revoke yourself" here, so a bot
+  // calling this on its own deviceId should expect to need a fresh device
+  // (registerDevice with a new keypair) afterward, same as any other client
+  // losing access to a revoked device.
+  async revokeDevice(deviceId: string) {
+    const msg = ClientMessage.create({ revokeDevice: { deviceId } });
+    return this.requestWithReauth(
+      msg,
+      "revokeDeviceResponse",
+      undefined,
+      (v) => v.deviceId === deviceId,
+    );
+  }
+
   // No capability/tier gate on the contract side — any authenticated
   // identity can set its own nickname/avatar/bio. Useful for giving a bot a
   // human-readable name instead of a raw address in chat UIs.
@@ -700,14 +763,21 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     // createChatResponse's chat.chatId is server-generated and unknown
     // in advance, so it can't seed a matcher the way an already-known
     // chatId does elsewhere — but the contract does echo back the
-    // resulting chat.participants, which for concurrent createChat() calls
-    // aimed at different people will very rarely coincide. Best-effort,
-    // like acceptChatRequest()'s participants match above.
+    // resulting chat.participants. Requiring every requested participant
+    // to be present (not just any one of them) is a much stronger
+    // disambiguator for concurrent createChat() calls: `some` would match
+    // this waiter against ANY other in-flight createChat's response the
+    // instant its resulting chat happens to include even one of this
+    // call's participants (near-certain if either call includes this
+    // identity itself, which every call must per the doc comment above).
+    // `every` only collides when one call's whole participant set is a
+    // subset of another's resulting chat — still best-effort, but far less
+    // likely to cross-resolve two concurrent calls with different targets.
     const resp = await this.requestWithReauth(
       msg,
       "createChatResponse",
       undefined,
-      (v) => !!v.chat && participants.some((p) => v.chat!.participants?.includes(p)),
+      (v) => !!v.chat && participants.every((p) => v.chat!.participants?.includes(p)),
     );
     // handlePush() already calls processChatInfo() for the same chat when
     // the push arrives, synchronously before this await resolves — calling
@@ -742,6 +812,20 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return resp;
   }
 
+  // Declines this one pending request only — does not block the sender
+  // (use blockIdentity separately for that). Mirrors declineGroupInvite.
+  async declineChatRequest(fromIdentity: string) {
+    const msg = ClientMessage.create({ declineChatRequest: { fromIdentity } });
+    const resp = await this.requestWithReauth(
+      msg,
+      "declineChatRequestResponse",
+      undefined,
+      (v) => v.fromIdentity === fromIdentity,
+    );
+    this.pendingChatRequests.delete(fromIdentity);
+    return resp;
+  }
+
   // Identity-indexed, not chat-indexed: also rejects a pending chat request
   // from `targetIdentity` (no chat is ever created), and is enforced by the
   // gateway on message delivery for chats that were already accepted.
@@ -765,6 +849,13 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       undefined,
       (v) => v.targetIdentity === targetIdentity,
     );
+  }
+
+  // Powers a Settings > Blocked Users-style view — the identities this
+  // account has blocked via blockIdentity(), not the other direction.
+  async listBlockedIdentities() {
+    const msg = ClientMessage.create({ listBlockedIdentities: {} });
+    return this.requestWithReauth(msg, "listBlockedIdentitiesResponse");
   }
 
   async updatePrivacySettings(requireChatApproval: boolean) {
@@ -1021,6 +1112,21 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
           `Message is ${byteLength} bytes, exceeding the configured limit of ${this.maxMessageSize}`,
         );
       }
+    }
+
+    // Mirrors decryptAndEmit's incoming EDIT-retype guard: reject rewriting
+    // a message's content type client-side (e.g. text -> payment_request)
+    // before it's ever sent, not just when receiving one from someone else.
+    // Only enforceable when this process has actually seen the original
+    // SEND (originalContentTypeByMsgId is populated from any decrypted SEND
+    // this process observed, own or received) — same known limitation as
+    // the incoming guard: unknown origin lets the edit through unchanged.
+    const originalType = this.originalContentTypeByMsgId.get(msgId);
+    if (originalType === "text" && parseMessageContent(newText).type !== "text") {
+      throw new EvergramValidationError(
+        "edit_content_type_mismatch",
+        `Message ${msgId} was originally sent as text — editMessage() cannot rewrite it into a different content type`,
+      );
     }
 
     const symKey = this.getSymKeyOrThrow(chatId);
@@ -1586,7 +1692,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       },
     });
 
-    this.visitorSessions.set(roomToken, { session, ...meta });
+    this.boundedMapSet(this.visitorSessions, roomToken, { session, ...meta }, MAX_VISITOR_SESSIONS);
   }
 
   // Rehydrates a visitor room this process was a party to before a restart
@@ -1967,6 +2073,18 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       // let bot consumers react (e.g. stop scheduling sends to it).
       if (result.status === ChatSyncResult_Status.MISSING && result.chatId) {
         if (this.chats.delete(result.chatId)) {
+          // Drop everything else keyed by this chatId too — otherwise the
+          // chat's symmetric key and any envelopes/sends still queued for
+          // it linger in memory for the rest of the process's life (this
+          // map is never swept by size alone the way the *_PENDING_* caps
+          // above are; a removed chat's entries would just sit here
+          // forever once orphaned).
+          this.symKeys.delete(result.chatId);
+          this.pendingEnvelopes.delete(result.chatId);
+          this.chatsMissingKey.delete(result.chatId);
+          for (const [msgId, pending] of this.pendingSends) {
+            if (pending.chatId === result.chatId) this.pendingSends.delete(msgId);
+          }
           this.emit("chatRemoved", result.chatId);
         }
       }
@@ -1997,16 +2115,28 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       }
     }
 
-    // Boot sync: silently merge, mirroring how queryChatsResponse.results
-    // above updates `chats` without emitting per-item events.
+    // Boot sync: emit for any request not already known locally (a fresh
+    // process, or one that reconnected after missing it) — EvergramBot's
+    // onChatRequest/onGroupInvite are meant to see requests that were
+    // already pending at connect time, but subscribing happens BEFORE this
+    // snapshot's response arrives (connect() resolves on "authenticated",
+    // which fires before syncChats()'s fire-and-forget response lands).
+    // Without emitting here, a handler registered before start() — exactly
+    // what the README shows — never sees them: bot.ts's own replay only
+    // covers requests already in the map at the moment onChatRequest is
+    // called. Skip re-emitting for requests already known (every later
+    // syncChats(), every reconnect) so a bot doesn't get notified about the
+    // same pending request repeatedly.
     for (const req of msg.queryChatsResponse?.pendingChatRequests ?? []) {
-      if (req.fromIdentity)
-        this.boundedMapSet(
-          this.pendingChatRequests,
-          req.fromIdentity,
-          req,
-          MAX_PENDING_CHAT_REQUESTS,
-        );
+      if (!req.fromIdentity) continue;
+      const isNew = !this.pendingChatRequests.has(req.fromIdentity);
+      this.boundedMapSet(
+        this.pendingChatRequests,
+        req.fromIdentity,
+        req,
+        MAX_PENDING_CHAT_REQUESTS,
+      );
+      if (isNew) this.emit("chatRequestReceived", req);
     }
 
     // Live push: a CreateChat from another identity is awaiting our
@@ -2023,14 +2153,17 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       this.emit("chatRequestReceived", req);
     }
 
+    // Same "emit on boot for anything new" fix as pendingChatRequests above.
     for (const invite of msg.queryChatsResponse?.pendingGroupInvites ?? []) {
-      if (invite.chatId)
-        this.boundedMapSet(
-          this.pendingGroupInvites,
-          invite.chatId,
-          invite,
-          MAX_PENDING_GROUP_INVITES,
-        );
+      if (!invite.chatId) continue;
+      const isNew = !this.pendingGroupInvites.has(invite.chatId);
+      this.boundedMapSet(
+        this.pendingGroupInvites,
+        invite.chatId,
+        invite,
+        MAX_PENDING_GROUP_INVITES,
+      );
+      if (isNew) this.emit("groupInviteReceived", invite);
     }
 
     if (msg.groupInviteReceived?.invite) {
@@ -2100,6 +2233,28 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
         "device.devicePrivHex does not match device.devicePubHex — this device will never be able to decrypt any chat key; check wherever this keypair is persisted/reloaded for corruption",
       );
     }
+
+    // A hand-typed or independently-derived device.deviceId that doesn't
+    // actually match sha256(devicePubHex) passes both checks above (priv
+    // and pub agree with each other) and only surfaces once authenticate()
+    // reaches the gateway/contract, as a confusing "invalid_device" —
+    // nothing before that points back at the deviceId itself. Same
+    // fail-fast-at-construction reasoning as the priv/pub check above.
+    let expectedDeviceId: string;
+    try {
+      expectedDeviceId = deriveDeviceId(normalizedPubHex);
+    } catch {
+      throw new EvergramValidationError(
+        "invalid_device_pubkey_format",
+        "device.devicePubHex is not a valid hex-encoded public key",
+      );
+    }
+    if (device.deviceId !== expectedDeviceId) {
+      throw new EvergramValidationError(
+        "device_id_mismatch",
+        `device.deviceId (${device.deviceId}) does not match sha256(devicePubHex) (${expectedDeviceId}) — check wherever deviceId is generated/persisted`,
+      );
+    }
   }
 
   // Mirrors the webapp client's own processChat(): derive this device's
@@ -2149,7 +2304,13 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       return;
     }
 
-    const isRotation = this.symKeys.has(chat.chatId);
+    // A second ChatInfo for an already-known chat (a meta-only queryChats
+    // hit, a bundled response alongside an unrelated RPC, a plain reconnect
+    // resync) reaches here just as often as an actual key rotation — only
+    // the latter should notify. Compare the derived key bytes, not just
+    // "did we already have some key for this chat".
+    const previous = this.symKeys.get(chat.chatId);
+    const isRotation = !!previous && !symKeysEqual(previous, opened);
     this.symKeys.set(chat.chatId, opened);
 
     if (isRotation) this.emit("chatKeyRotated", { chatId: chat.chatId });

@@ -64,6 +64,12 @@ const AUTH_CODES = new Set([
   "invalid_signed_message_address",
   "invalid_signed_message_signature",
   "unsupported_chain_family",
+  // Auth attempted with no live AuthChallenge for this connection to prove
+  // against (e.g. a second authenticate() reusing an already-consumed
+  // nonce) — a fresh connection always gets a fresh challenge, so this is
+  // fixed by reconnectAndAuthenticate() the same way any other AUTH_CODES
+  // entry is.
+  "no_active_auth_challenge",
 ]);
 
 const DEVICE_REVOKED_CODES = new Set(["device_revoked"]);
@@ -86,6 +92,15 @@ const ACCESS_DENIED_CODES = new Set([
   "not_admin",
   // updateChatRoles: "only admins can update roles".
   "unauthorized",
+  // moderateChannel: caller isn't currently a channel op.
+  "FORBIDDEN",
+  // createWidget: capability/tier gate, same shape as capability_not_allowed
+  // above — see access tiers.
+  "widgets_not_available",
+  // createWidget: per-tier cap on live widgets reached (not a capability
+  // gate, but the same "request denied, nothing to retry" shape a caller
+  // handles identically).
+  "widget_limit_reached",
 ]);
 
 const RESTRICTED_CODES = new Set(["ACCOUNT_RESTRICTED", "account_restricted"]);
