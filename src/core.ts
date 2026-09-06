@@ -360,6 +360,15 @@ export interface EvergramCoreEvents {
   // already known locally; see chatKeyRotated for actual key changes on an
   // already-known chat.
   chatSynced: [chat: ChatInfo];
+  // Fires for an already-known chat when a fresh ChatInfo carries different
+  // participants/meta (roles, name, modes) than what was cached — e.g.
+  // another admin's updateChatRoles, addParticipant/removeParticipant, or a
+  // moderation-mode toggle, all pushed to every participant as a bundled
+  // rotateChatVersionResponse. Distinct from chatKeyRotated, which only
+  // fires when the symmetric key itself actually changes — a role or
+  // membership change alone doesn't rotate it, so consumers that only
+  // listened for chatKeyRotated had no signal at all for this case.
+  chatMetaUpdated: [chat: ChatInfo];
   // This device has no sealed symmetric key for the chat at all, so nothing
   // arriving in it can be decrypted. Distinct from an "error": it is an
   // expected state (a freshly registered device is keys-missing everywhere
@@ -2273,6 +2282,18 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     }
   }
 
+  // Cheap equality check for chatMetaUpdated above — covers everything a
+  // meta-only mutation (role change, participant add/remove, mode toggle,
+  // rename) can touch without needing to know which specific field moved.
+  private static chatMetaSnapshot(chat: ChatInfo): string {
+    return JSON.stringify({
+      participants: chat.participants,
+      name: chat.meta?.name,
+      roles: chat.meta?.roles,
+      modes: chat.meta?.modes,
+    });
+  }
+
   // Mirrors the webapp client's own processChat(): derive this device's
   // symmetric key from the sealed envelope the gateway produced, cache the
   // chat, and drain any messages that arrived before the key was known.
@@ -2289,8 +2310,16 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     // whether the key below turns out to be sealed/openable, so a chat still
     // shows up (e.g. as pending/undecryptable) even when it can't be read yet.
     const isNewChat = !this.chats.has(chat.chatId);
+    const previousChat = this.chats.get(chat.chatId);
     this.chats.set(chat.chatId, chat);
-    if (isNewChat) this.emit("chatSynced", chat);
+    if (isNewChat) {
+      this.emit("chatSynced", chat);
+    } else if (
+      previousChat &&
+      EvergramCore.chatMetaSnapshot(previousChat) !== EvergramCore.chatMetaSnapshot(chat)
+    ) {
+      this.emit("chatMetaUpdated", chat);
+    }
 
     const sealed = chat.symKeyEncrypted?.[this.selfIdentityKey]?.devices?.[this.device.deviceId];
 
