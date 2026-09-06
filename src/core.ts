@@ -352,6 +352,14 @@ export interface EvergramCoreEvents {
     event: { chatId: string; msgId: string; status: ResponseStatus | undefined; eventType: string },
   ];
   chatKeyRotated: [event: { chatId: string }];
+  // Fires the first time a chat is seen locally — from a boot syncChats(),
+  // a live reconnect resync, or createChat/acceptChatRequest/
+  // rotateChatVersion's own response — so a consumer building a chat list
+  // (e.g. a TUI's /list) can populate it right after connect() instead of
+  // waiting for a message to arrive in each chat. Not repeated for a chat
+  // already known locally; see chatKeyRotated for actual key changes on an
+  // already-known chat.
+  chatSynced: [chat: ChatInfo];
   // This device has no sealed symmetric key for the chat at all, so nothing
   // arriving in it can be decrypted. Distinct from an "error": it is an
   // expected state (a freshly registered device is keys-missing everywhere
@@ -1391,6 +1399,14 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.chats.get(chatId);
   }
 
+  // Snapshot of every chat known locally so far (populated incrementally by
+  // processChatInfo — see chatSynced above for the corresponding event).
+  // Lets a consumer render a chat list without tracking chatSynced/
+  // chatRemoved itself, e.g. right after connect() + syncChats().
+  getChats(): ChatInfo[] {
+    return [...this.chats.values()];
+  }
+
   // ===================== widget-visitor chat =====================
   // See [[evergram-sdk-relay-duplication]] memory — ported from the
   // webapp's widget feature, kept in sync manually rather than shared.
@@ -2263,7 +2279,18 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private processChatInfo(chat: ChatInfo): void {
     if (!chat.chatId) return;
 
+    // Same "tell consumers about anything new" gap as pendingChatRequests/
+    // pendingGroupInvites in handlePush above: a bot/UI that wants its full
+    // chat list without waiting for a message in each one (e.g. to populate
+    // a chat list right after connect()'s boot syncChats()) had no signal
+    // for "this chat now exists locally" — only chatKeyRotated, which
+    // deliberately doesn't fire for a chat's first-ever key derivation (see
+    // isRotation below). Emit unconditionally on first sight, independent of
+    // whether the key below turns out to be sealed/openable, so a chat still
+    // shows up (e.g. as pending/undecryptable) even when it can't be read yet.
+    const isNewChat = !this.chats.has(chat.chatId);
     this.chats.set(chat.chatId, chat);
+    if (isNewChat) this.emit("chatSynced", chat);
 
     const sealed = chat.symKeyEncrypted?.[this.selfIdentityKey]?.devices?.[this.device.deviceId];
 
