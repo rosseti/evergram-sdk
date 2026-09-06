@@ -37,7 +37,7 @@
     "rotation-load": "tsx scripts/rotation-load.ts"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.14.0",
+    "@bufbuild/protobuf": "^2.14.1",
     "ripple-keypairs": "^3.0.0",
     "tweetnacl": "^1.0.3",
     "ws": "^8.21.3",
