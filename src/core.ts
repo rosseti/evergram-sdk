@@ -1,5 +1,6 @@
 import os from "node:os";
 import {
+  AccountPresence_Status,
   ChainFamily,
   ChatInfo,
   ChatSyncResult_Status,
@@ -383,6 +384,11 @@ export interface EvergramCoreEvents {
   joinDenied: [event: JoinDeniedEvent];
   chatRequestReceived: [event: PendingChatRequest];
   groupInviteReceived: [event: PendingGroupInvite];
+  // Pushed by the gateway for any identity currently under watchIdentities()
+  // (see below) when its online/offline status changes. identityKey is
+  // already wire-format (chainFamily:address), same as every other identity
+  // field on this interface (sender, participants, fromIdentity, ...).
+  accountPresence: [event: { identityKey: string; online: boolean; ts: number }];
   restricted: [event: ReputationUpdated];
   visitorRoomRequested: [event: EvergramVisitorRoomRequested];
   visitorMessage: [event: EvergramVisitorMessage];
@@ -1404,6 +1410,35 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     }
   }
 
+  // Fire-and-forget, same contract as syncChats() above: the gateway starts
+  // pushing "accountPresence" events for these identities asynchronously
+  // rather than replying to this call directly. Safe to call repeatedly
+  // (e.g. once per chat opened in a UI) — watching an identity that's
+  // already watched is a no-op server-side, not an error.
+  watchIdentities(identities: string[]): void {
+    if (identities.length === 0) return;
+    const msg = ClientMessage.create({ watchIdentities: { identities } });
+    try {
+      this.assertReadyToSend(msg);
+      this.transport.send(msg);
+    } catch (err) {
+      this.emit("error", err as Error);
+    }
+  }
+
+  // Stops "accountPresence" pushes for these identities. Safe to call for
+  // an identity that was never watched (or already unwatched).
+  unwatchIdentities(identities: string[]): void {
+    if (identities.length === 0) return;
+    const msg = ClientMessage.create({ unwatchIdentities: { identities } });
+    try {
+      this.assertReadyToSend(msg);
+      this.transport.send(msg);
+    } catch (err) {
+      this.emit("error", err as Error);
+    }
+  }
+
   getChat(chatId: string): ChatInfo | undefined {
     return this.chats.get(chatId);
   }
@@ -2219,6 +2254,14 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
 
     if (msg.joinDeniedEvent) {
       this.emit("joinDenied", msg.joinDeniedEvent);
+    }
+
+    if (msg.accountPresence?.identityKey) {
+      this.emit("accountPresence", {
+        identityKey: msg.accountPresence.identityKey,
+        online: msg.accountPresence.status === AccountPresence_Status.ONLINE,
+        ts: msg.accountPresence.ts,
+      });
     }
 
     if (msg.visitorRoomRequestedEvent) {
