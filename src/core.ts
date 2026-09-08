@@ -690,7 +690,14 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
             },
           },
         });
-        await this.request(registerMsg, "registerDeviceResponse");
+        // registerDevice is a consensus write — the default requestTimeoutMs
+        // (30s) is tight even for a local single-node gateway and not enough
+        // against staging/production's real network latency; every other
+        // consensus write in this class (see registerDevice() below) passes
+        // 35000 explicitly for the same reason. This call-site used the
+        // default and was the first thing to time out on a brand-new
+        // identity's first connect against a slower gateway.
+        await this.request(registerMsg, "registerDeviceResponse", 35000);
         await this.request(msg, "authResponse");
         return;
       }
