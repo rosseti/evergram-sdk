@@ -725,6 +725,17 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return this.requestWithReauth(msg, "listDevicesResponse");
   }
 
+  // IRC LUSERS-style live counts, callable any time a bot/integrator wants
+  // them — not pushed automatically. localUsers/globalUsers count distinct
+  // identities (not devices/sockets) with at least one open connection on
+  // the node that answers this: locally, and across the whole relay mesh
+  // respectively. peerNodes is how many other cluster nodes that gateway
+  // currently has an authenticated relay link to.
+  async getNetworkStats() {
+    const msg = ClientMessage.create({ networkStatsRequest: {} });
+    return this.requestWithReauth(msg, "networkStatsResponse");
+  }
+
   // Revoking this connection's OWN device invalidates the session it's
   // currently authenticated under — the gateway/contract don't distinguish
   // "revoke a different device" from "revoke yourself" here, so a bot

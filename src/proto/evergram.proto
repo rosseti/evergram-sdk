@@ -156,6 +156,9 @@ message ClientMessage {
     ListBlockedIdentities list_blocked_identities   = 62;
 
     CheckIdentityRegistered check_identity_registered = 63;
+
+    // IRC-LUSERS-style live connection counts — see NetworkStatsResponse.
+    NetworkStatsRequest network_stats_request = 64;
   }
 }
 
@@ -781,7 +784,26 @@ message ServerMessage {
     ListBlockedIdentitiesResponse list_blocked_identities_response  = 72;
 
     CheckIdentityRegisteredResponse check_identity_registered_response = 74;
+
+    NetworkStatsResponse network_stats_response = 75;
   }
+}
+
+// IRC LUSERS-style live counts. local_users/global_users count distinct
+// identities (not devices, not sockets) with at least one open connection:
+// local_users = this gateway node's own clientRegistry; global_users =
+// local_users plus every identity the relay mesh's PRESENCE broadcasts have
+// told this node is online on a peer node (see gateway/relay/remotePresence.ts)
+// — already-known data, no new relay query needed to answer this.
+// peer_nodes = how many other cluster nodes this gateway currently has an
+// authenticated relay link to (gateway/relay/peerRegistry.ts).
+message NetworkStatsRequest {
+}
+
+message NetworkStatsResponse {
+  int32 local_users  = 1;
+  int32 global_users = 2;
+  int32 peer_nodes   = 3;
 }
 
 message GetDevicePublicKeysByIdentities {

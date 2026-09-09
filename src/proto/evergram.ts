@@ -459,7 +459,11 @@ export interface ClientMessage {
   moderateChannel?: ModerateChannel | undefined;
   declineChatRequest?: DeclineChatRequest | undefined;
   listBlockedIdentities?: ListBlockedIdentities | undefined;
-  checkIdentityRegistered?: CheckIdentityRegistered | undefined;
+  checkIdentityRegistered?:
+    | CheckIdentityRegistered
+    | undefined;
+  /** IRC-LUSERS-style live connection counts — see NetworkStatsResponse. */
+  networkStatsRequest?: NetworkStatsRequest | undefined;
 }
 
 export interface SubscribePublicChannel {
@@ -1030,6 +1034,26 @@ export interface ServerMessage {
   declineChatRequestResponse?: DeclineChatRequestResponse | undefined;
   listBlockedIdentitiesResponse?: ListBlockedIdentitiesResponse | undefined;
   checkIdentityRegisteredResponse?: CheckIdentityRegisteredResponse | undefined;
+  networkStatsResponse?: NetworkStatsResponse | undefined;
+}
+
+/**
+ * IRC LUSERS-style live counts. local_users/global_users count distinct
+ * identities (not devices, not sockets) with at least one open connection:
+ * local_users = this gateway node's own clientRegistry; global_users =
+ * local_users plus every identity the relay mesh's PRESENCE broadcasts have
+ * told this node is online on a peer node (see gateway/relay/remotePresence.ts)
+ * — already-known data, no new relay query needed to answer this.
+ * peer_nodes = how many other cluster nodes this gateway currently has an
+ * authenticated relay link to (gateway/relay/peerRegistry.ts).
+ */
+export interface NetworkStatsRequest {
+}
+
+export interface NetworkStatsResponse {
+  localUsers: number;
+  globalUsers: number;
+  peerNodes: number;
 }
 
 export interface GetDevicePublicKeysByIdentities {
@@ -2665,6 +2689,7 @@ function createBaseClientMessage(): ClientMessage {
     declineChatRequest: undefined,
     listBlockedIdentities: undefined,
     checkIdentityRegistered: undefined,
+    networkStatsRequest: undefined,
   };
 }
 
@@ -2858,6 +2883,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.checkIdentityRegistered !== undefined) {
       CheckIdentityRegistered.encode(message.checkIdentityRegistered, writer.uint32(506).fork()).join();
+    }
+    if (message.networkStatsRequest !== undefined) {
+      NetworkStatsRequest.encode(message.networkStatsRequest, writer.uint32(514).fork()).join();
     }
     return writer;
   },
@@ -3373,6 +3401,14 @@ export const ClientMessage: MessageFns<ClientMessage> = {
           message.checkIdentityRegistered = CheckIdentityRegistered.decode(reader, reader.uint32());
           continue;
         }
+        case 64: {
+          if (tag !== 514) {
+            break;
+          }
+
+          message.networkStatsRequest = NetworkStatsRequest.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -3687,6 +3723,11 @@ export const ClientMessage: MessageFns<ClientMessage> = {
         : isSet(object.check_identity_registered)
         ? CheckIdentityRegistered.fromJSON(object.check_identity_registered)
         : undefined,
+      networkStatsRequest: isSet(object.networkStatsRequest)
+        ? NetworkStatsRequest.fromJSON(object.networkStatsRequest)
+        : isSet(object.network_stats_request)
+        ? NetworkStatsRequest.fromJSON(object.network_stats_request)
+        : undefined,
     };
   },
 
@@ -3880,6 +3921,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
     }
     if (message.checkIdentityRegistered !== undefined) {
       obj.checkIdentityRegistered = CheckIdentityRegistered.toJSON(message.checkIdentityRegistered);
+    }
+    if (message.networkStatsRequest !== undefined) {
+      obj.networkStatsRequest = NetworkStatsRequest.toJSON(message.networkStatsRequest);
     }
     return obj;
   },
@@ -4076,6 +4120,9 @@ export const ClientMessage: MessageFns<ClientMessage> = {
       (object.checkIdentityRegistered !== undefined && object.checkIdentityRegistered !== null)
         ? CheckIdentityRegistered.fromPartial(object.checkIdentityRegistered)
         : undefined;
+    message.networkStatsRequest = (object.networkStatsRequest !== undefined && object.networkStatsRequest !== null)
+      ? NetworkStatsRequest.fromPartial(object.networkStatsRequest)
+      : undefined;
     return message;
   },
 };
@@ -9805,6 +9852,7 @@ function createBaseServerMessage(): ServerMessage {
     declineChatRequestResponse: undefined,
     listBlockedIdentitiesResponse: undefined,
     checkIdentityRegisteredResponse: undefined,
+    networkStatsResponse: undefined,
   };
 }
 
@@ -10028,6 +10076,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
     }
     if (message.checkIdentityRegisteredResponse !== undefined) {
       CheckIdentityRegisteredResponse.encode(message.checkIdentityRegisteredResponse, writer.uint32(594).fork()).join();
+    }
+    if (message.networkStatsResponse !== undefined) {
+      NetworkStatsResponse.encode(message.networkStatsResponse, writer.uint32(602).fork()).join();
     }
     return writer;
   },
@@ -10623,6 +10674,14 @@ export const ServerMessage: MessageFns<ServerMessage> = {
           message.checkIdentityRegisteredResponse = CheckIdentityRegisteredResponse.decode(reader, reader.uint32());
           continue;
         }
+        case 75: {
+          if (tag !== 602) {
+            break;
+          }
+
+          message.networkStatsResponse = NetworkStatsResponse.decode(reader, reader.uint32());
+          continue;
+        }
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -10987,6 +11046,11 @@ export const ServerMessage: MessageFns<ServerMessage> = {
         : isSet(object.check_identity_registered_response)
         ? CheckIdentityRegisteredResponse.fromJSON(object.check_identity_registered_response)
         : undefined,
+      networkStatsResponse: isSet(object.networkStatsResponse)
+        ? NetworkStatsResponse.fromJSON(object.networkStatsResponse)
+        : isSet(object.network_stats_response)
+        ? NetworkStatsResponse.fromJSON(object.network_stats_response)
+        : undefined,
     };
   },
 
@@ -11216,6 +11280,9 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       obj.checkIdentityRegisteredResponse = CheckIdentityRegisteredResponse.toJSON(
         message.checkIdentityRegisteredResponse,
       );
+    }
+    if (message.networkStatsResponse !== undefined) {
+      obj.networkStatsResponse = NetworkStatsResponse.toJSON(message.networkStatsResponse);
     }
     return obj;
   },
@@ -11473,6 +11540,156 @@ export const ServerMessage: MessageFns<ServerMessage> = {
       (object.checkIdentityRegisteredResponse !== undefined && object.checkIdentityRegisteredResponse !== null)
         ? CheckIdentityRegisteredResponse.fromPartial(object.checkIdentityRegisteredResponse)
         : undefined;
+    message.networkStatsResponse = (object.networkStatsResponse !== undefined && object.networkStatsResponse !== null)
+      ? NetworkStatsResponse.fromPartial(object.networkStatsResponse)
+      : undefined;
+    return message;
+  },
+};
+
+function createBaseNetworkStatsRequest(): NetworkStatsRequest {
+  return {};
+}
+
+export const NetworkStatsRequest: MessageFns<NetworkStatsRequest> = {
+  encode(_: NetworkStatsRequest, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): NetworkStatsRequest {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseNetworkStatsRequest();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(_: any): NetworkStatsRequest {
+    return {};
+  },
+
+  toJSON(_: NetworkStatsRequest): unknown {
+    const obj: any = {};
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<NetworkStatsRequest>, I>>(base?: I): NetworkStatsRequest {
+    return NetworkStatsRequest.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<NetworkStatsRequest>, I>>(_: I): NetworkStatsRequest {
+    const message = createBaseNetworkStatsRequest();
+    return message;
+  },
+};
+
+function createBaseNetworkStatsResponse(): NetworkStatsResponse {
+  return { localUsers: 0, globalUsers: 0, peerNodes: 0 };
+}
+
+export const NetworkStatsResponse: MessageFns<NetworkStatsResponse> = {
+  encode(message: NetworkStatsResponse, writer: BinaryWriter = new BinaryWriter()): BinaryWriter {
+    if (message.localUsers !== 0) {
+      writer.uint32(8).int32(message.localUsers);
+    }
+    if (message.globalUsers !== 0) {
+      writer.uint32(16).int32(message.globalUsers);
+    }
+    if (message.peerNodes !== 0) {
+      writer.uint32(24).int32(message.peerNodes);
+    }
+    return writer;
+  },
+
+  decode(input: BinaryReader | Uint8Array, length?: number): NetworkStatsResponse {
+    const reader = input instanceof BinaryReader ? input : new BinaryReader(input);
+    const end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseNetworkStatsResponse();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1: {
+          if (tag !== 8) {
+            break;
+          }
+
+          message.localUsers = reader.int32();
+          continue;
+        }
+        case 2: {
+          if (tag !== 16) {
+            break;
+          }
+
+          message.globalUsers = reader.int32();
+          continue;
+        }
+        case 3: {
+          if (tag !== 24) {
+            break;
+          }
+
+          message.peerNodes = reader.int32();
+          continue;
+        }
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skip(tag & 7);
+    }
+    return message;
+  },
+
+  fromJSON(object: any): NetworkStatsResponse {
+    return {
+      localUsers: isSet(object.localUsers)
+        ? globalThis.Number(object.localUsers)
+        : isSet(object.local_users)
+        ? globalThis.Number(object.local_users)
+        : 0,
+      globalUsers: isSet(object.globalUsers)
+        ? globalThis.Number(object.globalUsers)
+        : isSet(object.global_users)
+        ? globalThis.Number(object.global_users)
+        : 0,
+      peerNodes: isSet(object.peerNodes)
+        ? globalThis.Number(object.peerNodes)
+        : isSet(object.peer_nodes)
+        ? globalThis.Number(object.peer_nodes)
+        : 0,
+    };
+  },
+
+  toJSON(message: NetworkStatsResponse): unknown {
+    const obj: any = {};
+    if (message.localUsers !== 0) {
+      obj.localUsers = Math.round(message.localUsers);
+    }
+    if (message.globalUsers !== 0) {
+      obj.globalUsers = Math.round(message.globalUsers);
+    }
+    if (message.peerNodes !== 0) {
+      obj.peerNodes = Math.round(message.peerNodes);
+    }
+    return obj;
+  },
+
+  create<I extends Exact<DeepPartial<NetworkStatsResponse>, I>>(base?: I): NetworkStatsResponse {
+    return NetworkStatsResponse.fromPartial(base ?? ({} as any));
+  },
+  fromPartial<I extends Exact<DeepPartial<NetworkStatsResponse>, I>>(object: I): NetworkStatsResponse {
+    const message = createBaseNetworkStatsResponse();
+    message.localUsers = object.localUsers ?? 0;
+    message.globalUsers = object.globalUsers ?? 0;
+    message.peerNodes = object.peerNodes ?? 0;
     return message;
   },
 };
