@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import nacl from "tweetnacl";
 import { EvergramCore, EvergramDevice } from "../../src/core.js";
 import { Envelope } from "../../src/proto/evergram.js";
-import { deriveDeviceId, generateDeviceKeypair } from "../../src/crypto.js";
+import { deriveDeviceId, encryptMessage, generateDeviceKeypair } from "../../src/crypto.js";
 import { EvergramWallet, generateWallet } from "../../src/wallet.js";
 
 // See rotation-retry.test.ts for why this stand-in is needed: EvergramCore's
@@ -77,24 +78,63 @@ describe("envelope replay/duplicate suppression", () => {
   it("only emits 'message' once for a redelivered (duplicate) envelope", () => {
     const messageHandler = vi.fn();
     core.on("message", messageHandler);
-    // decryptMessage will throw on this fake ciphertext — that's fine, the
-    // dedup check runs before decryption and this test only cares that the
-    // second delivery never reaches emit(). Swallow the expected throw via
-    // a try/catch per call instead of asserting decrypted content.
+    // A real symKey (seeded in beforeEach) with garbled ciphertext just
+    // fails to decrypt (decryptMessage returns null, see crypto.ts) rather
+    // than throwing — this env is a stand-in for a stale-key SEND, not a
+    // malformed one.
     const env = sendEnvelope("msg-1", "nonce-1");
 
-    for (let i = 0; i < 2; i++) {
-      try {
-        (core as any).handleEnvelope(env);
-      } catch {
-        // decryptMessage failure on fake ciphertext is expected; only the
-        // first call should even reach decryptMessage (see assertion below).
-      }
-    }
+    (core as any).handleEnvelope(env);
+    (core as any).handleEnvelope(env);
 
-    // isDuplicateEnvelope must have blocked the second call before decrypt
-    // was attempted a second time.
-    expect((core as any).seenEnvelopeKeys.size).toBe(1);
+    // A SEND that fails to decrypt is deliberately left out of
+    // seenEnvelopeKeys (see decryptAndEmit's text === null branch) so a
+    // later, correctly-keyed redelivery of the same envelope isn't mistaken
+    // for a duplicate of a failed attempt — see the "stale key" test below.
+    // What must still hold here: it's queued at most once per delivery, no
+    // more.
+    expect((core as any).seenEnvelopeKeys.size).toBe(0);
+    expect((core as any).pendingEnvelopes.get(chatId)?.length).toBe(2);
+    expect(messageHandler).not.toHaveBeenCalled();
+  });
+
+  it("queues an undecryptable SEND (stale key) and replays it once the chat's key is refreshed", () => {
+    const messageHandler = vi.fn();
+    const staleHandler = vi.fn();
+    core.on("message", messageHandler);
+    core.on("chatKeyStale", staleHandler);
+
+    const env = sendEnvelope("msg-1", "nonce-1");
+    (core as any).handleEnvelope(env);
+
+    // Decrypt failed (garbled ciphertext under the seeded key) — the
+    // message must NOT have been silently emitted as empty text, the app
+    // must have been told the key is stale, and the envelope must still be
+    // waiting for a working key.
+    expect(messageHandler).not.toHaveBeenCalled();
+    expect(staleHandler).toHaveBeenCalledWith({ chatId, msgId: "msg-1" });
+    expect((core as any).pendingEnvelopes.get(chatId)).toHaveLength(1);
+
+    // Simulate the chat's key being refreshed (a rotation broadcast or a
+    // plain resync both end up here, via processChatInfo -> drainPending)
+    // with a key this envelope actually decrypts under.
+    const realKey = nacl.randomBytes(32);
+    const { nonce, ciphertext } = encryptMessage(realKey, "oi, cheguei com um dispositivo novo");
+
+    const freshEnv = sendEnvelope("msg-2", nonce);
+    freshEnv.send!.ciphertext = ciphertext;
+    (core as any).symKeys.set(chatId, realKey);
+    (core as any).drainPending(chatId);
+
+    // The stale queued envelope (msg-1) is still garbled under the new key
+    // too in this test (its ciphertext was never re-encrypted) — it's
+    // expected to fail again and re-queue; what matters is it was retried
+    // rather than dropped forever, and a *new*, decryptable delivery for the
+    // same chat proceeds normally once the key is current.
+    (core as any).handleEnvelope(freshEnv);
+    expect(messageHandler).toHaveBeenCalledWith(
+      expect.objectContaining({ msgId: "msg-2", text: "oi, cheguei com um dispositivo novo" }),
+    );
   });
 
   it("does not drop a legitimate EDIT to an already-seen msgId as a duplicate", () => {

@@ -392,7 +392,7 @@ what's available:
 
 - **Connection**: `connected`, `authenticated`, `disconnected`, `reconnecting`, `error`
 - **Messaging**: `message`, `reaction`, `messageEdited`, `messageDeleted`, `typing`, `delivery`
-- **Chats**: `chatKeyRotated`, `chatKeyMissing`, `chatRemoved`, `joinRequested`, `joinDenied`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
+- **Chats**: `chatKeyRotated`, `chatKeyMissing`, `chatKeyStale`, `chatRemoved`, `joinRequested`, `joinDenied`, `chatRequestReceived`, `groupInviteReceived`, `restricted`
 
 `chatKeyMissing` fires when this device has no sealed symmetric key for a chat, so nothing arriving in it can be decrypted. A freshly registered device is in that state for every existing chat until some participant rotates the chat key. The SDK does not rotate on its own except when a send fails, so a bot that only listens stays deaf in that chat until you call `rotateChatVersion(chatId)`:
 
@@ -401,6 +401,12 @@ bot.core.on("chatKeyMissing", ({ chatId }) => bot.core.rotateChatVersion(chatId)
 ```
 
 Rotation is expensive for a large group (a device-key fan-out over every participant plus a consensus write), so pace this yourself if you expect many chats at once rather than firing them all in parallel.
+
+`chatKeyStale` is the sibling case: this device _has_ a sealed key for the chat, but it failed to open a specific incoming SEND — the signature of a stale key rather than a missing one, e.g. this identity was re-added to a group chat after being removed, or another participant sent from a brand-new device, and this device missed the resulting key rotation broadcast. The envelope isn't dropped: it's queued internally and replayed automatically the next time this chat's key is refreshed (another rotation, or any `syncChats()`/reconnect), so no explicit handling is required. Listen for it if you want to react sooner than the next natural resync, e.g. by nudging one along yourself:
+
+```ts
+bot.core.on("chatKeyStale", ({ chatId }) => bot.core.syncChats());
+```
 
 - **Widget-visitor chat**: `visitorRoomRequested`, `visitorMessage`, `visitorReaction`, `visitorMessageEdited`, `visitorMessageDeleted`, `visitorTyping`, `visitorStatusChanged`, `visitorRoomTimedOut`, `visitorChannelParticipantJoined`, `visitorChannelParticipantLeft`, `visitorChannelModeChanged`, `visitorKicked`
 

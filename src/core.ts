@@ -379,6 +379,19 @@ export interface EvergramCoreEvents {
   // that chat forever, since the SDK's only automatic rotation trigger is a
   // failed send. Call rotateChatVersion(chatId) to resolve it.
   chatKeyMissing: [event: { chatId: string }];
+  // This device has *a* sealed key for the chat, but it failed to open a
+  // specific incoming SEND — the signature of a stale key: this device
+  // missed the rotation broadcast that followed a membership change (e.g.
+  // being re-added after a kick, or another participant's new device
+  // joining) and is still holding the pre-rotation key. The envelope is
+  // queued (see queuePendingEnvelope) and will be re-decrypted automatically
+  // the next time processChatInfo() runs for this chat, whether that's a
+  // live rotation broadcast or a plain resync (e.g. reconnect's syncChats());
+  // this event is only a signal for consumers who want to react sooner, e.g.
+  // by calling syncChats() themselves or showing a "decrypting…" placeholder
+  // instead of nothing. Distinct from chatKeyMissing, which fires when this
+  // device has no key for the chat at all.
+  chatKeyStale: [event: { chatId: string; msgId: string }];
   chatRemoved: [chatId: string];
   joinRequested: [event: JoinRequestedEvent];
   joinDenied: [event: JoinDeniedEvent];
@@ -2486,6 +2499,41 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     map.set(key, value);
   }
 
+  // Shared by deliverOrQueue (no key at all yet) and decryptAndEmit's SEND
+  // branch (a key exists but didn't open this envelope — see chatKeyStale).
+  // Either way the fix is the same: hold the envelope until the next
+  // processChatInfo() for this chat, which drainPending() then replays it
+  // against.
+  private queuePendingEnvelope(env: Envelope): void {
+    const queue = this.pendingEnvelopes.get(env.chatId) ?? [];
+    queue.push(env);
+
+    if (queue.length > MAX_PENDING_ENVELOPES_PER_CHAT) {
+      queue.shift();
+      this.emit(
+        "error",
+        new EvergramValidationError(
+          "pending_envelope_queue_overflow",
+          `chat ${env.chatId}'s key never resolved after ${MAX_PENDING_ENVELOPES_PER_CHAT} queued envelopes — dropping the oldest. Check chatKeyMissing/chatKeyRotated/chatKeyStale/error events for this chat.`,
+        ),
+      );
+    }
+
+    if (!this.pendingEnvelopes.has(env.chatId) && this.pendingEnvelopes.size >= MAX_PENDING_CHATS) {
+      const oldestChatId = this.pendingEnvelopes.keys().next().value!;
+      this.pendingEnvelopes.delete(oldestChatId);
+      this.emit(
+        "error",
+        new EvergramValidationError(
+          "pending_chat_queue_overflow",
+          `${MAX_PENDING_CHATS} distinct chats have envelopes awaiting their key — dropping the oldest chat's queue (${oldestChatId}).`,
+        ),
+      );
+    }
+
+    this.pendingEnvelopes.set(env.chatId, queue);
+  }
+
   // Mirrors the webapp client's own pendingRef/flushPendingForChat pattern:
   // an envelope can arrive before this device has derived the chat's
   // symmetric key (e.g. right after being added to a chat). Queue it and
@@ -2493,36 +2541,7 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
   private deliverOrQueue(env: Envelope): void {
     const symKey = this.symKeys.get(env.chatId);
     if (!symKey) {
-      const queue = this.pendingEnvelopes.get(env.chatId) ?? [];
-      queue.push(env);
-
-      if (queue.length > MAX_PENDING_ENVELOPES_PER_CHAT) {
-        queue.shift();
-        this.emit(
-          "error",
-          new EvergramValidationError(
-            "pending_envelope_queue_overflow",
-            `chat ${env.chatId}'s key never resolved after ${MAX_PENDING_ENVELOPES_PER_CHAT} queued envelopes — dropping the oldest. Check chatKeyMissing/chatKeyRotated/error events for this chat.`,
-          ),
-        );
-      }
-
-      if (
-        !this.pendingEnvelopes.has(env.chatId) &&
-        this.pendingEnvelopes.size >= MAX_PENDING_CHATS
-      ) {
-        const oldestChatId = this.pendingEnvelopes.keys().next().value!;
-        this.pendingEnvelopes.delete(oldestChatId);
-        this.emit(
-          "error",
-          new EvergramValidationError(
-            "pending_chat_queue_overflow",
-            `${MAX_PENDING_CHATS} distinct chats have envelopes awaiting their key — dropping the oldest chat's queue (${oldestChatId}).`,
-          ),
-        );
-      }
-
-      this.pendingEnvelopes.set(env.chatId, queue);
+      this.queuePendingEnvelope(env);
       return;
     }
 
@@ -2561,24 +2580,58 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
     return null;
   }
 
-  private isDuplicateEnvelope(env: Envelope): boolean {
-    const key = this.envelopeDedupeKey(env);
-    if (key === null) return false;
-    if (this.seenEnvelopeKeys.has(key)) return true;
+  private markEnvelopeSeen(key: string | null): void {
+    if (key === null) return;
 
     this.seenEnvelopeKeys.set(key, true);
     if (this.seenEnvelopeKeys.size > MAX_SEEN_ENVELOPE_KEYS) {
       const oldest = this.seenEnvelopeKeys.keys().next().value;
       if (oldest !== undefined) this.seenEnvelopeKeys.delete(oldest);
     }
+  }
+
+  private isDuplicateEnvelope(env: Envelope): boolean {
+    const key = this.envelopeDedupeKey(env);
+    if (key === null) return false;
+    if (this.seenEnvelopeKeys.has(key)) return true;
+
+    this.markEnvelopeSeen(key);
     return false;
   }
 
   private decryptAndEmit(env: Envelope, symKey: Uint8Array): void {
-    if (this.isDuplicateEnvelope(env)) return;
-
     if (env.send) {
+      // Dedup is checked but deliberately NOT marked yet — see the
+      // text === null branch below for why. Every other envelope shape
+      // (REACT/EDIT, and a successfully-decrypted SEND) marks it immediately
+      // via isDuplicateEnvelope/markEnvelopeSeen, same as before.
+      const dedupeKey = this.envelopeDedupeKey(env);
+      if (dedupeKey !== null && this.seenEnvelopeKeys.has(dedupeKey)) return;
+
       const text = decryptMessage(symKey, env.send.nonce, env.send.ciphertext);
+
+      if (text === null) {
+        // The key cached for this chat opened fine (deliverOrQueue only
+        // reaches decryptAndEmit once symKeys has *something*), but it
+        // didn't open this specific envelope — a stale key, not a corrupt
+        // one: this device missed the rotation broadcast for a membership
+        // change (e.g. this identity being re-added after a kick, or
+        // another participant sending from a brand-new device) and is still
+        // holding the pre-rotation key. Previously this fell through to
+        // parseMessageContent(null), which is indistinguishable from a
+        // legitimately empty message, and got emitted as one — permanently,
+        // since nothing ever revisited it. Queue it instead (drainPending()
+        // replays it the next time this chat's key is updated) and leave it
+        // out of seenEnvelopeKeys so a later, correctly-keyed redelivery of
+        // the same envelope isn't mistaken for a duplicate of this failed
+        // attempt.
+        this.queuePendingEnvelope(env);
+        this.emit("chatKeyStale", { chatId: env.chatId, msgId: env.send.msgId });
+        return;
+      }
+
+      this.markEnvelopeSeen(dedupeKey);
+
       const content = parseMessageContent(text);
 
       this.originalContentTypeByMsgId.set(env.send.msgId, content.type);
@@ -2598,7 +2651,12 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
       };
 
       this.emit("message", message);
-    } else if (env.react) {
+      return;
+    }
+
+    if (this.isDuplicateEnvelope(env)) return;
+
+    if (env.react) {
       const emoji = env.react.removed
         ? null
         : decryptMessage(symKey, env.react.nonce, env.react.ciphertext);
