@@ -402,6 +402,18 @@ export interface EvergramCoreEvents {
   // already wire-format (chainFamily:address), same as every other identity
   // field on this interface (sender, participants, fromIdentity, ...).
   accountPresence: [event: { identityKey: string; online: boolean; ts: number }];
+  // Pushed by the gateway when any identity we share a chat with (or watch)
+  // changes its profile, so clients can refresh cached nicknames live
+  // instead of re-fetching. identityKey is wire-format (chainFamily:address).
+  profileUpdated: [
+    event: {
+      identityKey: string;
+      nickname: string;
+      avatarUrl: string;
+      bio: string;
+      isAdmin: boolean;
+    },
+  ];
   restricted: [event: ReputationUpdated];
   visitorRoomRequested: [event: EvergramVisitorRoomRequested];
   visitorMessage: [event: EvergramVisitorMessage];
@@ -2294,6 +2306,17 @@ export class EvergramCore extends TypedEventEmitter<EvergramCoreEvents> {
         identityKey: msg.accountPresence.identityKey,
         online: msg.accountPresence.status === AccountPresence_Status.ONLINE,
         ts: msg.accountPresence.ts,
+      });
+    }
+
+    if (msg.profileUpdated?.profile?.identity) {
+      const p = msg.profileUpdated.profile;
+      this.emit("profileUpdated", {
+        identityKey: identityKey(p.identity as any),
+        nickname: p.nickname,
+        avatarUrl: p.avatarUrl,
+        bio: p.bio,
+        isAdmin: p.isAdmin,
       });
     }
 
